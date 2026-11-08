@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { CairnLogo } from './components/CairnLogo';
 import { ContinuityScoreWidget, ScoreBreakdown } from './components/ContinuityScoreWidget';
 import { ContinuityStressTestView, StressTestReport } from './components/ContinuityStressTestView';
 import { HandoverRehearsalChat, RehearsalExchange, UserRole } from './components/HandoverRehearsalChat';
@@ -333,19 +334,8 @@ export const CairnWorkspace: React.FC = () => {
       <aside className="w-64 flex-shrink-0 bg-ink-900 border-r border-ink-850 flex flex-col justify-between z-20 text-cream-100 shadow-warm-lg">
         <div>
           {/* Brand Header */}
-          <div className="p-5 border-b border-ink-850 flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-orange-brand flex items-center justify-center shadow-md shadow-orange-brand/30">
-              <Compass className="w-5 h-5 text-cream-50" />
-            </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <h1 className="font-bold text-base tracking-tight text-cream-50 font-serif">Cairn</h1>
-                <span className="text-[9px] font-mono font-bold bg-orange-bright/20 text-orange-bright border border-orange-bright/40 px-1.5 py-0.2 rounded">
-                  2.0
-                </span>
-              </div>
-              <p className="text-[11px] text-cream-400">Continuity Intelligence</p>
-            </div>
+          <div className="p-5 border-b border-ink-850 flex items-center justify-between">
+            <CairnLogo size="md" showText={true} inverted={true} />
           </div>
 
           {/* Project Boundary Card (MVP Scope Lock) */}
@@ -514,17 +504,22 @@ export const CairnWorkspace: React.FC = () => {
       {/* 2. MAIN CENTERED CONTENT WORKSPACE (Warm Linen Backdrop)  */}
       {/* ========================================================= */}
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-y-auto bg-cream-200">
-        {/* Top Centered Header Bar */}
-        <header className="border-b border-cream-300 bg-cream-100/95 sticky top-0 z-10 backdrop-blur-md px-8 py-3.5 flex items-center justify-between shadow-warm-sm">
+        {/* Top Centered Header Bar with Cairn Logo & Breadcrumbs */}
+        <header className="border-b border-cream-300 bg-cream-100/95 sticky top-0 z-10 backdrop-blur-md px-8 py-3 flex items-center justify-between shadow-warm-sm">
           <div className="flex items-center gap-3">
-            <h2 className="text-sm font-bold text-ink-950 font-serif capitalize">
-              {activeView === 'OVERVIEW' && 'Continuity Overview & Diagnostic Breakdown'}
-              {activeView === 'STRESS_TEST' && 'Continuity Stress Test (Controlled Departure)'}
-              {activeView === 'REHEARSAL' && 'Handover Rehearsal Dialogue'}
-              {activeView === 'KNOWLEDGE' && 'Structured Project Knowledge Model'}
-              {activeView === 'DEPARTING_QUEUE' && 'Departing Member Knowledge Capture Queue'}
-              {activeView === 'READINESS' && 'Successor Readiness Drills & Handover Export'}
-            </h2>
+            <CairnLogo size="sm" showText={false} />
+            <div className="flex items-center gap-2 text-xs">
+              <span className="font-serif font-bold text-ink-950">Cairn</span>
+              <span className="text-cream-400 font-mono">/</span>
+              <h2 className="text-xs font-semibold text-ink-800 capitalize">
+                {activeView === 'OVERVIEW' && 'Continuity Overview & Diagnostic Breakdown'}
+                {activeView === 'STRESS_TEST' && 'Continuity Stress Test (Controlled Departure)'}
+                {activeView === 'REHEARSAL' && 'Handover Rehearsal Dialogue'}
+                {activeView === 'KNOWLEDGE' && 'Structured Project Knowledge Model'}
+                {activeView === 'DEPARTING_QUEUE' && 'Departing Member Knowledge Capture Queue'}
+                {activeView === 'READINESS' && 'Successor Readiness Drills & Handover Export'}
+              </h2>
+            </div>
           </div>
 
           {/* Quick Metrics Bar */}
