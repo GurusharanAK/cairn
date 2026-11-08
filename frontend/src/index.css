@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+  background-color: #ECE5D8; /* Warm organic linen - glare-free & rich */
+  color: #1A1816;            /* Deep ink black */
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  overflow-x: hidden;
+}
+
+::selection {
+  background-color: #C85A17; /* Burnt orange */
+  color: #FAF7F2;            /* Cream */
+}
+
+/* Custom sleek warm scrollbar */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: #ECE5D8;
+}
+::-webkit-scrollbar-thumb {
+  background: #D8CEBF;
+  border-radius: 9999px;
+  border: 2px solid #ECE5D8;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #C85A17;
+}
