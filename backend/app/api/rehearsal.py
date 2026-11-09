@@ -456,3 +456,25 @@ def list_rehearsal_questions(
     questions = query.order_by(RehearsalQuestion.created_at.desc()).all()
     return [RehearsalQuestionRead.model_validate(q) for q in questions]
 
+
+@router.post(
+    "/{project_id}/reset-demo",
+    summary="Reset demo state back to pristine baseline with open gaps"
+)
+def reset_demo_state(
+    project_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Resets the demo state back to pristine baseline benchmark state.
+    """
+    verify_project_access(project_id=project_id, current_user=current_user, db=db)
+    from app.seeds.seed_demo_data import reset_database
+    reset_database()
+    return {
+        "status": "success",
+        "message": "Demo state reset to pristine baseline. All manually entered decisions, questions, and records deleted."
+    }
+
+
