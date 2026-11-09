@@ -16,9 +16,11 @@ import {
   reviewRehearsalQuestion,
   fetchReadinessScenarios,
   fetchHandoverPacket,
-  fetchKnowledgeModel
+  fetchKnowledgeModel,
+  resetDemoScenario
 } from './api/client';
 import { 
+  RotateCcw,
   Compass, 
   ShieldCheck, 
   Zap, 
@@ -358,6 +360,26 @@ export const CairnWorkspace: React.FC = () => {
     }));
   };
 
+  // Handle Reset Demo Scenario
+  const [resettingDemo, setResettingDemo] = useState(false);
+  const handleResetDemo = async () => {
+    setResettingDemo(true);
+    try {
+      const uid = USER_IDS[currentRole];
+      await resetDemoScenario(PROJECT_ID, uid);
+      setCurrentRole('INCOMING_MEMBER');
+      await loadLiveData();
+    } catch (e) {
+      console.warn("Reset demo failed, restoring local fallbacks", e);
+      setScoreData(FALLBACK_SCORE);
+      setStressReport(FALLBACK_STRESS);
+      setExchanges(FALLBACK_EXCHANGES);
+      setKnowledgeModel(FALLBACK_KNOWLEDGE_MODEL);
+    } finally {
+      setResettingDemo(false);
+    }
+  };
+
   // Handle Manager Review & Sign-Off
   const handleReviewQuestion = async (questionId: string, approved: boolean, comment?: string) => {
     try {
@@ -640,6 +662,16 @@ export const CairnWorkspace: React.FC = () => {
             <span className="bg-orange-light border border-orange-brand/30 text-orange-brand px-3 py-1 rounded-full font-bold shadow-warm-sm">
               {scoreData.overall_score} / 100
             </span>
+
+            <button 
+              onClick={handleResetDemo}
+              disabled={resettingDemo}
+              className="flex items-center gap-1.5 text-xs font-mono font-bold bg-cream-50 hover:bg-cream-200 border border-cream-300 text-ink-800 px-2.5 py-1.5 rounded-xl transition-colors shadow-warm-sm disabled:opacity-50"
+              title="Reset demo scenario to unrecorded gaps so you can re-test departing member workflow"
+            >
+              <RotateCcw className={`w-3.5 h-3.5 text-orange-brand ${resettingDemo ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">{resettingDemo ? 'Resetting...' : 'Reset Demo'}</span>
+            </button>
 
             <button 
               onClick={loadLiveData}
@@ -1029,6 +1061,8 @@ export const CairnWorkspace: React.FC = () => {
               onAskQuestion={handleAskQuestion}
               onReplyQuestion={handleReplyQuestion}
               onReviewQuestion={handleReviewQuestion}
+              onSwitchRole={(role) => setCurrentRole(role)}
+              onResetDemo={handleResetDemo}
             />
           )}
 

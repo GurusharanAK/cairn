@@ -488,6 +488,82 @@ def review_rehearsal_reply(
     )
 
 
+@router.post(
+    "/{project_id}/reset-demo",
+    summary="Reset demo state back to pristine baseline with open gaps"
+)
+def reset_demo_state(
+    project_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Resets the demo state back to pristine unrecorded gap condition:
+    1. Removes all RehearsalQuestion records for the project.
+    2. Removes all REHEARSAL_VERIFIED_ANSWER source documents.
+    3. Resets dec-retry-limit back to REASON_MISSING (reason=None).
+    4. Resets gap-missing-retry-reason back to QUESTION_QUEUED with no reply.
+    5. Cleans up any dynamically created gaps.
+    """
+    verify_project_access(project_id=project_id, current_user=current_user, db=db)
+
+    # 1. Delete all rehearsal questions for project
+    db.query(RehearsalQuestion).filter(RehearsalQuestion.project_id == project_id).delete()
+
+    # 2. Delete all verified answers generated from rehearsal
+    db.query(SourceDocument).filter(
+        SourceDocument.project_id == project_id,
+        SourceDocument.source_type == SourceType.REHEARSAL_VERIFIED_ANSWER
+    ).delete()
+
+    # 3. Clean up non-default knowledge gaps
+    db.query(KnowledgeGap).filter(
+        KnowledgeGap.project_id == project_id,
+        ~KnowledgeGap.id.in_(["gap-missing-retry-reason", "gap-hidden-dashboard-auth"])
+    ).delete()
+
+    # 4. Reset default gaps
+    gap_retry = db.query(KnowledgeGap).filter(KnowledgeGap.id == "gap-missing-retry-reason").first()
+    if gap_retry:
+        gap_retry.status = GapStatus.QUESTION_QUEUED
+        gap_retry.departing_member_reply = None
+        gap_retry.reviewer_id = None
+        gap_retry.review_notes = None
+        gap_retry.verified_source_id = None
+        gap_retry.question_to_departing = "Why is the payment retry limit set to 3? What upstream timeout or rate limit influenced this?"
+
+    gap_dash = db.query(KnowledgeGap).filter(KnowledgeGap.id == "gap-hidden-dashboard-auth").first()
+    if gap_dash:
+        gap_dash.status = GapStatus.OPEN
+        gap_dash.departing_member_reply = None
+        gap_dash.reviewer_id = None
+        gap_dash.review_notes = None
+        gap_dash.verified_source_id = None
+
+    # 5. Reset Decision: Set Payment Retry Limit to 3 -> REASON_MISSING
+    dec_retry = db.query(Decision).filter(Decision.id == "dec-retry-limit").first()
+    if dec_retry:
+        dec_retry.status = DecisionStatus.REASON_MISSING
+        dec_retry.reason = None
+        dec_retry.evidence_quote = "Decided to set payment retry limit to 3"
+        dec_retry.source_id = "src-git-commit-42"
+
+    # Reset Decision: Use PostgreSQL -> EVIDENCE_SUPPORTED
+    dec_pg = db.query(Decision).filter(Decision.id == "dec-db-choice").first()
+    if dec_pg:
+        dec_pg.status = DecisionStatus.EVIDENCE_SUPPORTED
+        dec_pg.reason = "Relational transactions and strict ACID compliance needed for ledger auditing"
+        dec_pg.evidence_quote = "because relational transactions and strict ACID compliance are non-negotiable for financial auditing"
+        dec_pg.source_id = "src-doc-arch-01"
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": "Demo state reset to pristine baseline. 'Set Payment Retry Limit to 3' is now an unrecorded gap ready for testing."
+    }
+
+
 @router.get(
     "/{project_id}/questions",
     response_model=List[RehearsalQuestionRead],

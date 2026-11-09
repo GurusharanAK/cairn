@@ -137,3 +137,13 @@ export async function fetchKnowledgeModel(projectId: string, userId: string) {
   return res.json();
 }
 
+export async function resetDemoScenario(projectId: string, userId: string = 'usr-mgr-01') {
+  const res = await fetch(`${API_BASE}/api/rehearsal/${projectId}/reset-demo`, {
+    method: 'POST',
+    headers: { 'X-User-ID': userId }
+  });
+  if (!res.ok) throw new Error(`Failed to reset demo: ${res.statusText}`);
+  return res.json();
+}
+
+

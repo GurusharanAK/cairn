@@ -6,9 +6,11 @@ import {
   AlertCircle, 
   ShieldCheck, 
   UserCheck, 
+  UserMinus,
   FileCheck, 
   MessageSquare, 
   XCircle,
+  RotateCcw,
   HelpCircle,
   Sparkles,
   Link,
@@ -40,6 +42,8 @@ interface HandoverRehearsalChatProps {
   onAskQuestion: (question: string) => Promise<void>;
   onReplyQuestion: (questionId: string, replyText: string) => Promise<void>;
   onReviewQuestion: (questionId: string, approved: boolean, comment?: string) => Promise<void>;
+  onSwitchRole?: (role: UserRole) => void;
+  onResetDemo?: () => Promise<void>;
 }
 
 export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
@@ -49,9 +53,12 @@ export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
   exchanges,
   onAskQuestion,
   onReplyQuestion,
-  onReviewQuestion
+  onReviewQuestion,
+  onSwitchRole,
+  onResetDemo
 }) => {
   const [newQuestion, setNewQuestion] = useState('');
+  const [resettingDemo, setResettingDemo] = useState(false);
   const [submittingQuestion, setSubmittingQuestion] = useState(false);
   const [replyInputs, setReplyInputs] = useState<Record<string, string>>({});
   const [managerNotes, setManagerNotes] = useState<Record<string, string>>({});
@@ -117,10 +124,31 @@ export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
           </div>
         </div>
 
-        {/* Current Active Persona Indicator */}
-        <div className="text-right font-mono text-xs">
-          <span className="text-[10px] text-ink-600 uppercase block">ACTING AS:</span>
-          <span className="font-bold text-orange-brand">{currentRole}</span>
+        {/* Current Active Persona Indicator & Demo Controls */}
+        <div className="flex items-center gap-3">
+          {onResetDemo && (
+            <button
+              onClick={async () => {
+                setResettingDemo(true);
+                try {
+                  await onResetDemo();
+                } finally {
+                  setResettingDemo(false);
+                }
+              }}
+              disabled={resettingDemo}
+              className="bg-cream-200 hover:bg-cream-300 border border-cream-400 text-ink-800 text-[11px] font-mono font-bold px-3 py-1.5 rounded-xl transition-colors flex items-center gap-1.5 shadow-xs disabled:opacity-50"
+              title="Reset project back to pristine initial state with open gaps ready to test"
+            >
+              <RotateCcw className={`w-3.5 h-3.5 text-orange-brand ${resettingDemo ? 'animate-spin' : ''}`} />
+              <span>{resettingDemo ? 'Resetting...' : 'Reset Demo Flow'}</span>
+            </button>
+          )}
+
+          <div className="text-right font-mono text-xs border-l border-cream-300 pl-3">
+            <span className="text-[10px] text-ink-600 uppercase block">ACTING AS:</span>
+            <span className="font-bold text-orange-brand">{currentRole}</span>
+          </div>
         </div>
       </div>
 
@@ -218,8 +246,20 @@ export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
                       </button>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-2 text-[11px] font-mono text-amber-900 bg-amber-100/70 p-2.5 rounded-xl border border-amber-300">
-                      <Clock className="w-3.5 h-3.5 text-amber-700" /> Awaiting explanation from Departing Member
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3 rounded-xl border border-amber-300 bg-amber-100/80">
+                      <div className="flex items-center gap-2 text-xs font-mono text-amber-950 font-medium">
+                        <Clock className="w-4 h-4 text-amber-700 flex-shrink-0" />
+                        <span>Awaiting explanation from Departing Member</span>
+                      </div>
+                      {onSwitchRole && (
+                        <button
+                          onClick={() => onSwitchRole('DEPARTING_MEMBER')}
+                          className="bg-amber-700 hover:bg-amber-800 text-cream-50 font-mono text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors self-start sm:self-auto shadow-xs"
+                        >
+                          <UserMinus className="w-3.5 h-3.5" />
+                          <span>Switch to Departing Member to Answer</span>
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -268,8 +308,20 @@ export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
                       </div>
                     </div>
                   ) : (
-                    <div className="text-[11px] font-mono text-purple-900 flex items-center gap-2">
-                      <Lock className="w-3.5 h-3.5 text-purple-700" /> Only Manager can sign off to mint permanent source evidence
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3 rounded-xl border border-purple-300 bg-purple-100/80">
+                      <div className="flex items-center gap-2 text-xs font-mono text-purple-950 font-medium">
+                        <Lock className="w-4 h-4 text-purple-700 flex-shrink-0" />
+                        <span>Awaiting Manager review & sign-off to mint evidence</span>
+                      </div>
+                      {onSwitchRole && (
+                        <button
+                          onClick={() => onSwitchRole('MANAGER')}
+                          className="bg-purple-700 hover:bg-purple-800 text-cream-50 font-mono text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors self-start sm:self-auto shadow-xs"
+                        >
+                          <UserCheck className="w-3.5 h-3.5" />
+                          <span>Switch to Manager to Review</span>
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
