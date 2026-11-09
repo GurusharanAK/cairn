@@ -129,3 +129,11 @@ export async function fetchHandoverPacket(projectId: string, userId: string) {
   return res.json();
 }
 
+export async function fetchKnowledgeModel(projectId: string, userId: string) {
+  const res = await fetch(`${API_BASE}/api/projects/${projectId}/knowledge-model`, {
+    headers: { 'X-User-ID': userId }
+  });
+  if (!res.ok) throw new Error(`Failed to fetch knowledge model: ${res.statusText}`);
+  return res.json();
+}
+

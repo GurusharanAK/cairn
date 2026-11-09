@@ -59,6 +59,48 @@ class HandoverPacket(BaseModel):
     open_attention_items: List[Dict[str, Any]]
 
 
+class DecisionItem(BaseModel):
+    id: str
+    title: str
+    reason: Optional[str] = None
+    status: str
+    source_id: Optional[str] = None
+    evidence_quote: Optional[str] = None
+
+
+class ComponentItem(BaseModel):
+    id: str
+    name: str
+    owner_name: str
+    status: str
+    source_id: Optional[str] = None
+
+
+class DependencyItem(BaseModel):
+    id: str
+    source_name: str
+    target_name: str
+    type: str
+    is_hidden: bool
+    source_id: Optional[str] = None
+
+
+class FailureItem(BaseModel):
+    id: str
+    title: str
+    error: str
+    fix: str
+    source_id: Optional[str] = None
+
+
+class KnowledgeModelResponse(BaseModel):
+    project_id: str
+    decisions: List[DecisionItem]
+    components: List[ComponentItem]
+    dependencies: List[DependencyItem]
+    failures: List[FailureItem]
+
+
 @router.get(
     "/{id}/readiness/scenarios",
     response_model=List[ReadinessScenario],
@@ -225,4 +267,57 @@ def get_handover_packet(
             "description": g.description
         } for g in gaps]
     )
+
+
+@router.get(
+    "/{id}/knowledge-model",
+    response_model=KnowledgeModelResponse,
+    summary="Get full knowledge graph/model for project including verified and unreasoned decisions"
+)
+def get_knowledge_model(
+    id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    project = verify_project_access(project_id=id, current_user=current_user, db=db)
+
+    components = db.query(Component).filter(Component.project_id == project.id).all()
+    decisions = db.query(Decision).filter(Decision.project_id == project.id).all()
+    dependencies = db.query(Dependency).filter(Dependency.project_id == project.id).all()
+    failures = db.query(FailureRecord).filter(FailureRecord.project_id == project.id).all()
+
+    return KnowledgeModelResponse(
+        project_id=project.id,
+        decisions=[DecisionItem(
+            id=d.id,
+            title=d.title,
+            reason=d.reason,
+            status=d.status.value,
+            source_id=d.source_id,
+            evidence_quote=d.evidence_quote
+        ) for d in decisions],
+        components=[ComponentItem(
+            id=c.id,
+            name=c.name,
+            owner_name=c.owner.full_name if c.owner else "Unassigned",
+            status=c.status.value,
+            source_id=c.source_id
+        ) for c in components],
+        dependencies=[DependencyItem(
+            id=dep.id,
+            source_name=dep.source_component.name if dep.source_component else "Unknown",
+            target_name=dep.target_component.name if dep.target_component else "Unknown",
+            type=dep.dependency_type.value,
+            is_hidden=dep.is_hidden,
+            source_id=dep.source_id
+        ) for dep in dependencies],
+        failures=[FailureItem(
+            id=f.id,
+            title=f.title,
+            error=f.error_message,
+            fix=f.attempted_fix,
+            source_id=f.source_id
+        ) for f in failures]
+    )
+
 

@@ -15,7 +15,8 @@ import {
   replyRehearsalQuestion, 
   reviewRehearsalQuestion,
   fetchReadinessScenarios,
-  fetchHandoverPacket
+  fetchHandoverPacket,
+  fetchKnowledgeModel
 } from './api/client';
 import { 
   Compass, 
@@ -151,6 +152,72 @@ const FALLBACK_EXCHANGES: RehearsalExchange[] = [
   }
 ];
 
+export interface KnowledgeModelData {
+  decisions: Array<{
+    id: string;
+    title: string;
+    reason: string | null;
+    status: string;
+    source_id: string;
+    evidence_quote?: string | null;
+  }>;
+  components: Array<{
+    id: string;
+    name: string;
+    owner_name: string;
+    status: string;
+    source_id: string;
+  }>;
+  dependencies: Array<{
+    id: string;
+    source_name: string;
+    target_name: string;
+    type: string;
+    is_hidden: boolean;
+    source_id: string;
+  }>;
+  failures: Array<{
+    id: string;
+    title: string;
+    error: string;
+    fix: string;
+    source_id: string;
+  }>;
+}
+
+const FALLBACK_KNOWLEDGE_MODEL: KnowledgeModelData = {
+  decisions: [
+    {
+      id: "dec-1",
+      title: "Use PostgreSQL for Financial Ledger",
+      reason: "Relational transactions and strict ACID compliance needed for ledger auditing",
+      status: "evidence_supported",
+      source_id: "src-doc-arch-01",
+      evidence_quote: "because relational transactions and strict ACID compliance are non-negotiable for financial auditing"
+    },
+    {
+      id: "dec-2",
+      title: "Set Payment Retry Limit to 3",
+      reason: null,
+      status: "reason_missing",
+      source_id: "src-git-commit-42",
+      evidence_quote: "Decided to set payment retry limit to 3"
+    }
+  ],
+  components: [
+    { id: "c-1", name: "Authentication Service", owner_name: "Departing Member", status: "ACTIVE", source_id: "src-doc-arch-01" },
+    { id: "c-2", name: "Payment Retry Worker", owner_name: "Departing Member", status: "ACTIVE", source_id: "src-git-commit-42" },
+    { id: "c-3", name: "Analytics Dashboard", owner_name: "Frontend Lead", status: "ACTIVE", source_id: "src-doc-arch-01" }
+  ],
+  dependencies: [
+    { id: "dep-1", source_name: "Payment Retry Worker", target_name: "Authentication Service", type: "CALLS_API", is_hidden: false, source_id: "src-doc-arch-01" },
+    { id: "dep-2", source_name: "Analytics Dashboard", target_name: "Authentication Service", type: "CALLS_API", is_hidden: true, source_id: "src-git-commit-42" }
+  ],
+  failures: [
+    { id: "f-1", title: "Stripe Webhook Concurrency Conflict", error: "HTTP 409 Conflict: Concurrent charge updates caused double capture.", fix: "Added redis distributed lock on charge.id key before processing webhook event.", source_id: "src-git-commit-42" }
+  ]
+};
+
 type NavView = 'OVERVIEW' | 'STRESS_TEST' | 'REHEARSAL' | 'KNOWLEDGE' | 'DEPARTING_QUEUE' | 'READINESS';
 
 export const CairnWorkspace: React.FC = () => {
@@ -162,6 +229,7 @@ export const CairnWorkspace: React.FC = () => {
   const [exchanges, setExchanges] = useState<RehearsalExchange[]>(FALLBACK_EXCHANGES);
   const [scenarios, setScenarios] = useState<ReadinessScenario[]>([]);
   const [completedScenarios, setCompletedScenarios] = useState<Record<string, boolean>>({});
+  const [knowledgeModel, setKnowledgeModel] = useState<KnowledgeModelData>(FALLBACK_KNOWLEDGE_MODEL);
   const [handoverPacket, setHandoverPacket] = useState<HandoverPacketData | null>(null);
   const [isLiveConnected, setIsLiveConnected] = useState(false);
   const [quickQuestionInput, setQuickQuestionInput] = useState('');
@@ -183,12 +251,13 @@ export const CairnWorkspace: React.FC = () => {
   const loadLiveData = async () => {
     try {
       const uid = USER_IDS[currentRole];
-      const [scoreRes, stressRes, questionsRes, scenRes, packetRes] = await Promise.allSettled([
+      const [scoreRes, stressRes, questionsRes, scenRes, packetRes, modelRes] = await Promise.allSettled([
         fetchProjectScore(PROJECT_ID, uid),
         fetchStressTest(PROJECT_ID, uid),
         fetchRehearsalQuestions(PROJECT_ID, uid),
         fetchReadinessScenarios(PROJECT_ID, uid),
-        fetchHandoverPacket(PROJECT_ID, uid)
+        fetchHandoverPacket(PROJECT_ID, uid),
+        fetchKnowledgeModel(PROJECT_ID, uid)
       ]);
 
       if (scoreRes.status === 'fulfilled') {
@@ -213,6 +282,9 @@ export const CairnWorkspace: React.FC = () => {
       }
       if (scenRes.status === 'fulfilled') setScenarios(scenRes.value);
       if (packetRes.status === 'fulfilled') setHandoverPacket(packetRes.value);
+      if (modelRes.status === 'fulfilled' && modelRes.value?.decisions) {
+        setKnowledgeModel(modelRes.value);
+      }
     } catch (e) {
       console.warn("Backend sync", e);
       setIsLiveConnected(false);
@@ -309,6 +381,24 @@ export const CairnWorkspace: React.FC = () => {
     }));
 
     if (approved) {
+      const targetExchange = exchanges.find(e => e.id === questionId);
+      const replyQuote = targetExchange?.departing_reply || comment || "Approved payment retry limit SLA";
+      setKnowledgeModel(prev => ({
+        ...prev,
+        decisions: prev.decisions.map(d => {
+          if (d.id === "dec-retry-limit" || d.id === "dec-2" || d.title.toLowerCase().includes("retry")) {
+            return {
+              ...d,
+              status: "evidence_supported",
+              reason: replyQuote,
+              source_id: `src-doc-rehearsal-${Date.now()}`,
+              evidence_quote: replyQuote
+            };
+          }
+          return d;
+        })
+      }));
+
       setScoreData(prev => {
         const newEvidence = Math.min(40, prev.evidence_coverage_score + 14.0);
         const newOwnership = prev.ownership_clarity_score;
@@ -951,13 +1041,13 @@ export const CairnWorkspace: React.FC = () => {
                 status: e.status,
                 departing_reply: e.departing_reply
               }))}
-              missingReasons={[
-                {
-                  id: "dec-retry",
-                  title: "Set Payment Retry Limit to 3",
+              missingReasons={knowledgeModel.decisions
+                .filter(d => d.status === 'reason_missing')
+                .map(d => ({
+                  id: d.id,
+                  title: d.title,
                   component_name: "Payment Retry Worker"
-                }
-              ]}
+                }))}
               onSubmitReply={async (id, text) => {
                 await handleReplyQuestion(id, text);
               }}
@@ -966,36 +1056,10 @@ export const CairnWorkspace: React.FC = () => {
 
           {activeView === 'KNOWLEDGE' && (
             <KnowledgeModelExplorer
-              decisions={[
-                {
-                  id: "dec-1",
-                  title: "Use PostgreSQL for Financial Ledger",
-                  reason: "Relational transactions and strict ACID compliance needed for ledger auditing",
-                  status: "evidence_supported",
-                  source_id: "src-doc-arch-01",
-                  evidence_quote: "because relational transactions and strict ACID compliance are non-negotiable for financial auditing"
-                },
-                {
-                  id: "dec-2",
-                  title: "Set Payment Retry Limit to 3",
-                  reason: null,
-                  status: "reason_missing",
-                  source_id: "src-git-commit-42",
-                  evidence_quote: "Decided to set payment retry limit to 3"
-                }
-              ]}
-              components={[
-                { id: "c-1", name: "Authentication Service", owner_name: "Departing Member", status: "ACTIVE", source_id: "src-doc-arch-01" },
-                { id: "c-2", name: "Payment Retry Worker", owner_name: "Departing Member", status: "ACTIVE", source_id: "src-git-commit-42" },
-                { id: "c-3", name: "Analytics Dashboard", owner_name: "Frontend Lead", status: "ACTIVE", source_id: "src-doc-arch-01" }
-              ]}
-              dependencies={[
-                { id: "dep-1", source_name: "Payment Retry Worker", target_name: "Authentication Service", type: "CALLS_API", is_hidden: false, source_id: "src-doc-arch-01" },
-                { id: "dep-2", source_name: "Analytics Dashboard", target_name: "Authentication Service", type: "CALLS_API", is_hidden: true, source_id: "src-git-commit-42" }
-              ]}
-              failures={[
-                { id: "f-1", title: "Stripe Webhook Concurrency Conflict", error: "HTTP 409 Conflict: Concurrent charge updates caused double capture.", fix: "Added redis distributed lock on charge.id key before processing webhook event.", source_id: "src-git-commit-42" }
-              ]}
+              decisions={knowledgeModel.decisions}
+              components={knowledgeModel.components}
+              dependencies={knowledgeModel.dependencies}
+              failures={knowledgeModel.failures}
             />
           )}
 
