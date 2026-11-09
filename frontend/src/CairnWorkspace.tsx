@@ -267,11 +267,11 @@ export const CairnWorkspace: React.FC = () => {
         setIsLiveConnected(true);
       }
       if (stressRes.status === 'fulfilled') setStressReport(stressRes.value);
-      if (questionsRes.status === 'fulfilled' && questionsRes.value.length > 0) {
+      if (questionsRes.status === 'fulfilled') {
         setExchanges(questionsRes.value.map((q: any) => ({
           id: q.id,
           project_id: q.project_id,
-          requester_name: "Successor Member",
+          requester_name: q.requester_id === 'usr-mgr-01' ? 'Engineering Manager' : 'Successor Member',
           question: q.question,
           status: q.status,
           evidence_answer: q.evidence_answer,
@@ -352,6 +352,10 @@ export const CairnWorkspace: React.FC = () => {
   const [resettingDemo, setResettingDemo] = useState(false);
   const handleResetDemo = async () => {
     setResettingDemo(true);
+    setExchanges([]);
+    setQuickQuestionInput('');
+    setCompletedScenarios({});
+    setKnowledgeModel(FALLBACK_KNOWLEDGE_MODEL);
     try {
       const uid = USER_IDS[currentRole];
       await resetDemoScenario(PROJECT_ID, uid);
@@ -361,7 +365,7 @@ export const CairnWorkspace: React.FC = () => {
       console.warn("Reset demo failed, restoring local fallbacks", e);
       setScoreData(FALLBACK_SCORE);
       setStressReport(FALLBACK_STRESS);
-      setExchanges(FALLBACK_EXCHANGES);
+      setExchanges([]);
       setKnowledgeModel(FALLBACK_KNOWLEDGE_MODEL);
     } finally {
       setResettingDemo(false);

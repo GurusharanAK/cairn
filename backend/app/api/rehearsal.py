@@ -15,8 +15,11 @@ from app.models.models import (
     SourceType,
     AccessLevel,
     Component,
+    ComponentStatus,
     Decision,
     DecisionStatus,
+    Dependency,
+    FailureRecord,
     KnowledgeGap,
     GapType,
     GapStatus,
@@ -351,29 +354,52 @@ def reset_demo_state(
     """
     Resets the demo state back to pristine unrecorded gap condition:
     1. Removes all RehearsalQuestion records for the project.
-    2. Removes all REHEARSAL_VERIFIED_ANSWER source documents.
-    3. Resets dec-retry-limit back to REASON_MISSING (reason=None).
-    4. Resets gap-missing-retry-reason back to QUESTION_QUEUED with no reply.
-    5. Cleans up any dynamically created gaps.
+    2. Removes all non-default SourceDocument records (rehearsal verified answers & manual ingests).
+    3. Removes all non-default Decision records (questions approved into decisions).
+    4. Removes all non-default KnowledgeGaps, Components, Dependencies, FailureRecords.
+    5. Resets dec-retry-limit back to REASON_MISSING (reason=None).
+    6. Resets gap-missing-retry-reason back to QUESTION_QUEUED with no reply.
     """
     verify_project_access(project_id=project_id, current_user=current_user, db=db)
 
     # 1. Delete all rehearsal questions for project
     db.query(RehearsalQuestion).filter(RehearsalQuestion.project_id == project_id).delete()
 
-    # 2. Delete all verified answers generated from rehearsal
+    # 2. Delete non-default Decisions (any decision created dynamically from Q&A or ingestion)
+    db.query(Decision).filter(
+        Decision.project_id == project_id,
+        ~Decision.id.in_(["dec-db-choice", "dec-retry-limit"])
+    ).delete(synchronize_session=False)
+
+    # 3. Delete non-default SourceDocuments
     db.query(SourceDocument).filter(
         SourceDocument.project_id == project_id,
-        SourceDocument.source_type == SourceType.REHEARSAL_VERIFIED_ANSWER
-    ).delete()
+        ~SourceDocument.id.in_(["src-doc-arch-01", "src-git-commit-42", "src-doc-budget-restricted"])
+    ).delete(synchronize_session=False)
 
-    # 3. Clean up non-default knowledge gaps
+    # 4. Clean up non-default knowledge gaps
     db.query(KnowledgeGap).filter(
         KnowledgeGap.project_id == project_id,
         ~KnowledgeGap.id.in_(["gap-missing-retry-reason", "gap-hidden-dashboard-auth"])
-    ).delete()
+    ).delete(synchronize_session=False)
 
-    # 4. Reset default gaps
+    # 5. Clean up non-default dependencies, failure records, and components
+    db.query(Dependency).filter(
+        Dependency.project_id == project_id,
+        ~Dependency.id.in_(["dep-payment-auth", "dep-dash-auth-hidden"])
+    ).delete(synchronize_session=False)
+
+    db.query(FailureRecord).filter(
+        FailureRecord.project_id == project_id,
+        ~FailureRecord.id.in_(["fail-rec-01"])
+    ).delete(synchronize_session=False)
+
+    db.query(Component).filter(
+        Component.project_id == project_id,
+        ~Component.id.in_(["comp-auth", "comp-payment", "comp-dashboard"])
+    ).delete(synchronize_session=False)
+
+    # 6. Reset default gaps
     gap_retry = db.query(KnowledgeGap).filter(KnowledgeGap.id == "gap-missing-retry-reason").first()
     if gap_retry:
         gap_retry.status = GapStatus.QUESTION_QUEUED
@@ -391,13 +417,14 @@ def reset_demo_state(
         gap_dash.review_notes = None
         gap_dash.verified_source_id = None
 
-    # 5. Reset Decision: Set Payment Retry Limit to 3 -> REASON_MISSING
+    # 7. Reset Decision: Set Payment Retry Limit to 3 -> REASON_MISSING
     dec_retry = db.query(Decision).filter(Decision.id == "dec-retry-limit").first()
     if dec_retry:
         dec_retry.status = DecisionStatus.REASON_MISSING
         dec_retry.reason = None
         dec_retry.evidence_quote = "Decided to set payment retry limit to 3"
         dec_retry.source_id = "src-git-commit-42"
+        dec_retry.updated_at = datetime.utcnow()
 
     # Reset Decision: Use PostgreSQL -> EVIDENCE_SUPPORTED
     dec_pg = db.query(Decision).filter(Decision.id == "dec-db-choice").first()
@@ -406,12 +433,19 @@ def reset_demo_state(
         dec_pg.reason = "Relational transactions and strict ACID compliance needed for ledger auditing"
         dec_pg.evidence_quote = "because relational transactions and strict ACID compliance are non-negotiable for financial auditing"
         dec_pg.source_id = "src-doc-arch-01"
+        dec_pg.updated_at = datetime.utcnow()
+
+    # Reset Component ownership
+    comp_auth = db.query(Component).filter(Component.id == "comp-auth").first()
+    if comp_auth:
+        comp_auth.owner_id = "usr-dev-a"
+        comp_auth.status = ComponentStatus.ACTIVE
 
     db.commit()
 
     return {
         "status": "success",
-        "message": "Demo state reset to pristine baseline. 'Set Payment Retry Limit to 3' is now an unrecorded gap ready for testing."
+        "message": "Demo state reset to pristine baseline. All manually entered decisions, questions, and records deleted."
     }
 
 

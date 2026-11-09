@@ -130,6 +130,9 @@ export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
             <button
               onClick={async () => {
                 setResettingDemo(true);
+                setReplyInputs({});
+                setManagerNotes({});
+                setNewQuestion('');
                 try {
                   await onResetDemo();
                 } finally {
