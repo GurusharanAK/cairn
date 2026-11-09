@@ -277,15 +277,26 @@ def calculate_continuity_score(
     score_dependency = round(dep_ratio * 20.0, 2)
 
     # 4. Open Critical Gaps (20%)
-    # Penalty deducted for each open or unverified knowledge gap
+    # Penalty deducted for each open or unverified knowledge gap.
+    # INVARIANT: Count only manager-approved answers as resolved (APPROVED_AS_EVIDENCE).
+    # Submitted answers awaiting review (PENDING_REVIEW) or open questions remain penalized.
     open_gaps = [g for g in gaps if g.status in [GapStatus.OPEN, GapStatus.QUESTION_QUEUED, GapStatus.PENDING_REVIEW]]
     open_count = len(open_gaps)
 
     # Deduct 4 points per open gap up to 20 maximum points
     score_gaps = max(0.0, round(20.0 - (open_count * 4.0), 2))
 
-    # Overall Aggregate Score
+    # Identify single points of failure (direct components with inbound callers)
+    direct_components = [c for c in components if c.owner_id == project.departing_member_id]
+    spof_count = sum(1 for c in direct_components if len(c.inbound_dependencies) > 0)
+    untransferred_count = len(direct_components)
+
+    # Overall Aggregate Score: Plain sum of the four factors from the exact same data the screens use
     overall_score = round(score_evidence + score_ownership + score_dependency + score_gaps, 2)
+
+    # INVARIANT: Only show 100 when no gaps remain, no single points of failure remain, and ownership is transferred
+    if (open_count > 0 or spof_count > 0 or untransferred_count > 0) and overall_score >= 100.0:
+        overall_score = 95.0
 
     return ContinuityScoreBreakdown(
         project_id=project_id,
@@ -302,6 +313,8 @@ def calculate_continuity_score(
             "total_dependencies": total_deps,
             "hidden_dependencies_count": sum(1 for dep in dependencies if dep.is_hidden),
             "open_knowledge_gaps": open_count,
+            "single_points_of_failure_count": spof_count,
+            "untransferred_ownership_count": untransferred_count,
             "resolved_knowledge_gaps": sum(1 for g in gaps if g.status == GapStatus.APPROVED_AS_EVIDENCE)
         }
     )

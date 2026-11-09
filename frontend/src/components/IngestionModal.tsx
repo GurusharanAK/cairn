@@ -11,6 +11,7 @@ import {
   ArrowRight,
   ShieldAlert
 } from 'lucide-react';
+import { ingestSourceDocument } from '../api/client';
 
 interface IngestionModalProps {
   projectId: string;
@@ -60,26 +61,17 @@ export const IngestionModal: React.FC<IngestionModalProps> = ({
     setResult(null);
 
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/projects/${projectId}/ingest`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-User-ID': 'usr-mgr-01'
-        },
-        body: JSON.stringify({
+      const data = await ingestSourceDocument(
+        projectId,
+        {
           title: title.trim(),
           source_type: sourceType,
           content: content.trim(),
           access_level: accessLevel
-        })
-      });
+        },
+        'usr-mgr-01'
+      );
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.detail || 'Failed to ingest document');
-      }
-
-      const data = await res.json();
       setResult(data);
       onIngestSuccess();
     } catch (err: any) {

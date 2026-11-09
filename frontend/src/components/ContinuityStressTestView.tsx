@@ -176,7 +176,7 @@ export const ContinuityStressTestView: React.FC<ContinuityStressTestViewProps> =
                       <span>Owner: {comp.owner_name}</span>
                     </div>
 
-                    <div className="flex items-center gap-2 text-[11px] font-mono">
+                    <div className="flex items-center gap-2 text-[11px] font-mono flex-wrap">
                       {comp.missing_reasons_count > 0 && (
                         <span className="bg-rose-100 text-rose-800 border border-rose-200 px-2 py-0.5 rounded">
                           {comp.missing_reasons_count} missing reason
@@ -188,9 +188,15 @@ export const ContinuityStressTestView: React.FC<ContinuityStressTestViewProps> =
                         </span>
                       )}
                       {comp.missing_reasons_count === 0 && comp.open_gaps_count === 0 && (
-                        <span className="bg-emerald-100 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded">
-                          Documented
-                        </span>
+                        comp.impact_type === "DIRECT_OWNERSHIP" ? (
+                          <span className="bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded font-bold">
+                            Sole Maintainer SPOF (Transfer Pending)
+                          </span>
+                        ) : (
+                          <span className="bg-emerald-100 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded">
+                            Documented
+                          </span>
+                        )
                       )}
                     </div>
                   </div>
@@ -278,6 +284,18 @@ export const ContinuityStressTestView: React.FC<ContinuityStressTestViewProps> =
           {/* Diagnostic Evidence Badges */}
           <div className="space-y-2.5">
             <span className="text-[10px] font-mono uppercase text-ink-600 block">Identified Vulnerabilities:</span>
+
+            {selectedComponent.impact_type === "DIRECT_OWNERSHIP" && (
+              <div className="bg-amber-50 border border-amber-300 p-3 rounded-xl space-y-1 shadow-xs">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-amber-950 font-bold">Sole Primary Maintainer (SPOF):</span>
+                  <span className="font-mono font-bold text-amber-800 text-[10px] bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded">HIGH EXPOSURE</span>
+                </div>
+                <p className="text-[11px] text-ink-700">
+                  Rated HIGH risk because departing member is currently the sole owner. Downstream dependent services will be stranded if ownership and credentials are not transferred.
+                </p>
+              </div>
+            )}
             
             <div className="bg-cream-50 border border-cream-300 p-3 rounded-xl space-y-1 shadow-xs">
               <div className="flex items-center justify-between text-xs">

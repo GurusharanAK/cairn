@@ -5,7 +5,7 @@ from app.models.models import Base
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL", 
-    "postgresql://postgres:postgres@localhost:5432/cairn_db"
+    "sqlite:///cairn_demo.db"
 )
 
 # SQLite fallback for quick local testing if postgres isn't running

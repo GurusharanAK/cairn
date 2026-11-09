@@ -1,5 +1,54 @@
 // Cairn API Client
-const API_BASE = 'http://127.0.0.1:8000';
+// Dynamically resolve API URL:
+// 1. Vite environment variable (e.g. VITE_API_URL) if provided
+// 2. Relative path "" when running on production domains (e.g. Render, Vercel)
+// 3. http://127.0.0.1:8000 only when running on local dev machine
+export function getApiBaseUrl(): string {
+  // Vite env variable
+  const envUrl = (import.meta as any).env?.VITE_API_URL;
+  if (envUrl && typeof envUrl === 'string' && envUrl.trim().length > 0) {
+    return envUrl.replace(/\/+$/, '');
+  }
+
+  // Browser execution check
+  if (typeof window !== 'undefined' && window.location) {
+    const hostname = window.location.hostname;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return 'http://127.0.0.1:8000';
+    }
+    // On deployed host (Render, etc.), use relative URL to route to same-domain backend
+    return '';
+  }
+
+  return 'http://127.0.0.1:8000';
+}
+
+export const API_BASE = getApiBaseUrl();
+
+export interface IngestDocumentPayload {
+  title: string;
+  source_type: string;
+  content: string;
+  access_level: string;
+  doc_metadata?: Record<string, any>;
+  structured_payload?: Record<string, any>;
+}
+
+export async function ingestSourceDocument(projectId: string, payload: IngestDocumentPayload, userId: string = 'usr-mgr-01') {
+  const res = await fetch(`${API_BASE}/api/projects/${projectId}/ingest`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-User-ID': userId
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || `Failed to ingest document: ${res.statusText}`);
+  }
+  return res.json();
+}
 
 export async function fetchProjectScore(projectId: string, userId: string) {
   const res = await fetch(`${API_BASE}/api/projects/${projectId}/continuity-score`, {

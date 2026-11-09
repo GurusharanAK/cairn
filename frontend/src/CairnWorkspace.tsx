@@ -135,7 +135,7 @@ const FALLBACK_EXCHANGES: RehearsalExchange[] = [
     requester_name: "Successor Member",
     question: "Why did we decide to use PostgreSQL instead of MongoDB?",
     status: "ANSWERED_FROM_EVIDENCE",
-    evidence_answer: "Verified Record: Use PostgreSQL for Financial Ledger. Reason: Relational transactions and strict ACID compliance needed for ledger auditing (Excerpt: 'Meeting notes: Relational transactions non-negotiable for billing.')",
+    evidence_answer: "Verified Record: Use PostgreSQL for Financial Ledger. Reason: Relational transactions and strict ACID compliance needed for ledger auditing (Excerpt: 'because relational transactions and strict ACID compliance are non-negotiable for financial auditing')",
     cited_source_ids: ["src-doc-arch-01"],
     created_at: new Date(Date.now() - 3600000).toISOString()
   },
@@ -161,9 +161,17 @@ export const CairnWorkspace: React.FC = () => {
   const [stressReport, setStressReport] = useState<StressTestReport>(FALLBACK_STRESS);
   const [exchanges, setExchanges] = useState<RehearsalExchange[]>(FALLBACK_EXCHANGES);
   const [scenarios, setScenarios] = useState<ReadinessScenario[]>([]);
+  const [completedScenarios, setCompletedScenarios] = useState<Record<string, boolean>>({});
   const [handoverPacket, setHandoverPacket] = useState<HandoverPacketData | null>(null);
   const [isLiveConnected, setIsLiveConnected] = useState(false);
   const [quickQuestionInput, setQuickQuestionInput] = useState('');
+
+  const handleToggleScenario = (scenarioId: string) => {
+    setCompletedScenarios(prev => ({
+      ...prev,
+      [scenarioId]: !prev[scenarioId]
+    }));
+  };
 
   const PROJECT_ID = "proj-cairn-mvp";
   const USER_IDS: Record<UserRole, string> = {
@@ -239,7 +247,7 @@ export const CairnWorkspace: React.FC = () => {
           requester_name: "Successor Member",
           question: questionText,
           status: "ANSWERED_FROM_EVIDENCE",
-          evidence_answer: "Verified Record: Use PostgreSQL for Financial Ledger. Reason: Relational transactions and strict ACID compliance needed for ledger auditing.",
+          evidence_answer: "Verified Record: Use PostgreSQL for Financial Ledger. Reason: Relational transactions and strict ACID compliance needed for ledger auditing (Excerpt: 'because relational transactions and strict ACID compliance are non-negotiable for financial auditing')",
           cited_source_ids: ["src-doc-arch-01"],
           created_at: new Date().toISOString()
         }, ...prev]);
@@ -283,6 +291,8 @@ export const CairnWorkspace: React.FC = () => {
     try {
       const uid = USER_IDS[currentRole];
       await reviewRehearsalQuestion(questionId, approved, comment, uid);
+      // Immediately reload live questions, stress test, and deterministic continuity score from backend
+      await loadLiveData();
     } catch (e) {
       console.warn("Live review sync", e);
     }
@@ -299,19 +309,31 @@ export const CairnWorkspace: React.FC = () => {
     }));
 
     if (approved) {
-      setScoreData(prev => ({
-        ...prev,
-        overall_score: Math.min(100, prev.overall_score + 18.0),
-        evidence_coverage_score: Math.min(40, prev.evidence_coverage_score + 14.0),
-        gap_penalty_score: Math.min(20, prev.gap_penalty_score + 4.0),
-        metrics: {
-          ...prev.metrics,
-          open_knowledge_gaps: Math.max(0, prev.metrics.open_knowledge_gaps - 1),
-          resolved_knowledge_gaps: prev.metrics.resolved_knowledge_gaps + 1,
-          reason_missing_decisions: Math.max(0, prev.metrics.reason_missing_decisions - 1),
-          evidence_supported_decisions: prev.metrics.evidence_supported_decisions + 1
+      setScoreData(prev => {
+        const newEvidence = Math.min(40, prev.evidence_coverage_score + 14.0);
+        const newOwnership = prev.ownership_clarity_score;
+        const newDependency = prev.dependency_doc_score;
+        const newGaps = Math.min(20, prev.gap_penalty_score + 4.0);
+        const remainingOpenGaps = Math.max(0, prev.metrics.open_knowledge_gaps - 1);
+        let newOverall = Math.round((newEvidence + newOwnership + newDependency + newGaps) * 100) / 100;
+        // Strictly only show 100 when NO gaps remain and ownership transferred
+        if (remainingOpenGaps > 0 && newOverall >= 100) {
+          newOverall = 95.0;
         }
-      }));
+        return {
+          ...prev,
+          overall_score: newOverall,
+          evidence_coverage_score: newEvidence,
+          gap_penalty_score: newGaps,
+          metrics: {
+            ...prev.metrics,
+            open_knowledge_gaps: remainingOpenGaps,
+            resolved_knowledge_gaps: prev.metrics.resolved_knowledge_gaps + 1,
+            reason_missing_decisions: Math.max(0, prev.metrics.reason_missing_decisions - 1),
+            evidence_supported_decisions: prev.metrics.evidence_supported_decisions + 1
+          }
+        };
+      });
     }
   };
 
@@ -602,7 +624,11 @@ export const CairnWorkspace: React.FC = () => {
                     <TrendingUp className="w-3.5 h-3.5 text-orange-brand" />
                   </div>
                   <div className="text-2xl font-black font-mono text-ink-950">{scoreData.overall_score} <span className="text-xs font-normal text-ink-500">/ 100</span></div>
-                  <p className="text-[11px] text-ink-600">+18.0 pts upon resolving remaining gaps</p>
+                  <p className="text-[11px] text-ink-600">
+                    {100 - scoreData.overall_score > 0 
+                      ? `+${Math.max(0, Math.round((100 - scoreData.overall_score) * 10) / 10)} pts upon resolving remaining gaps & SPOFs`
+                      : 'Continuity fully certified'}
+                  </p>
                 </div>
 
                 <div className="bg-cream-50 border border-cream-300 rounded-2xl p-4 shadow-warm space-y-1">
@@ -610,8 +636,12 @@ export const CairnWorkspace: React.FC = () => {
                     <span>STRANDED SPOFs</span>
                     <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
                   </div>
-                  <div className="text-2xl font-black font-mono text-rose-700">2 <span className="text-xs font-normal text-ink-500">Components</span></div>
-                  <p className="text-[11px] text-ink-600">Auth Service, Payment Retry Worker</p>
+                  <div className="text-2xl font-black font-mono text-rose-700">
+                    {stressReport.single_points_of_failure.length} <span className="text-xs font-normal text-ink-500">Components</span>
+                  </div>
+                  <p className="text-[11px] text-ink-600">
+                    {stressReport.single_points_of_failure.length > 0 ? stressReport.single_points_of_failure.join(', ') : 'None remaining'}
+                  </p>
                 </div>
 
                 <div className="bg-cream-50 border border-cream-300 rounded-2xl p-4 shadow-warm space-y-1">
@@ -619,18 +649,31 @@ export const CairnWorkspace: React.FC = () => {
                     <span>UNRESOLVED GAPS</span>
                     <HelpCircle className="w-3.5 h-3.5 text-amber-600" />
                   </div>
-                  <div className="text-2xl font-black font-mono text-amber-700">2 <span className="text-xs font-normal text-ink-500">Critical</span></div>
-                  <p className="text-[11px] text-ink-600">1 Missing Reason, 1 Hidden Dependency</p>
+                  <div className="text-2xl font-black font-mono text-amber-700">
+                    {scoreData.metrics.open_knowledge_gaps} <span className="text-xs font-normal text-ink-500">Critical</span>
+                  </div>
+                  <p className="text-[11px] text-ink-600">
+                    {scoreData.metrics.open_knowledge_gaps > 0 
+                      ? `${scoreData.metrics.reason_missing_decisions} Missing Reason, ${scoreData.metrics.hidden_dependencies_count} Hidden Dependency` 
+                      : 'All critical gaps resolved'}
+                  </p>
                 </div>
 
-                <div className="bg-cream-50 border border-cream-300 rounded-2xl p-4 shadow-warm space-y-1">
-                  <div className="flex items-center justify-between text-xs font-mono text-ink-600">
-                    <span>DRILL READINESS</span>
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                  </div>
-                  <div className="text-2xl font-black font-mono text-emerald-800">50% <span className="text-xs font-normal text-ink-500">Pass Rate</span></div>
-                  <p className="text-[11px] text-ink-600">1 of 2 incident simulations approved</p>
-                </div>
+                {(() => {
+                  const drillTotal = scenarios.length > 0 ? scenarios.length : 2;
+                  const passedCount = Object.values(completedScenarios).filter(Boolean).length;
+                  const drillPct = Math.round((passedCount / drillTotal) * 100);
+                  return (
+                    <div className="bg-cream-50 border border-cream-300 rounded-2xl p-4 shadow-warm space-y-1">
+                      <div className="flex items-center justify-between text-xs font-mono text-ink-600">
+                        <span>DRILL READINESS</span>
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                      </div>
+                      <div className="text-2xl font-black font-mono text-emerald-800">{drillPct}% <span className="text-xs font-normal text-ink-500">Pass Rate</span></div>
+                      <p className="text-[11px] text-ink-600">{passedCount} of {drillTotal} incident simulations passed</p>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Radial Score Gauge Widget */}
@@ -982,6 +1025,8 @@ export const CairnWorkspace: React.FC = () => {
                   critical_evidence_cited: ["src-doc-arch-01"]
                 }
               ]}
+              completedScenarios={completedScenarios}
+              onToggleScenario={handleToggleScenario}
               handoverPacket={handoverPacket || {
                 project_id: PROJECT_ID,
                 project_name: "FinTrack Core Banking Ledger",
@@ -995,7 +1040,7 @@ export const CairnWorkspace: React.FC = () => {
                   { name: "Analytics Dashboard", owner: "Frontend Lead", source_id: "src-doc-arch-01", status: "ACTIVE" }
                 ],
                 verified_decisions: [
-                  { title: "Use PostgreSQL for Financial Ledger", reason: "Relational transactions and strict ACID compliance needed for ledger auditing", source_id: "src-doc-arch-01", evidence_quote: "Meeting notes: ACID requirements non-negotiable." }
+                  { title: "Use PostgreSQL for Financial Ledger", reason: "Relational transactions and strict ACID compliance needed for ledger auditing", source_id: "src-doc-arch-01", evidence_quote: "because relational transactions and strict ACID compliance are non-negotiable for financial auditing" }
                 ],
                 resolved_failure_playbooks: [
                   { title: "Stripe Webhook Concurrency Race Condition", error: "HTTP 409 Conflict: Concurrent charge updates caused double capture.", fix: "Added redis distributed lock on charge.id key before processing webhook event.", resolution: "Resolved: Lock TTL set to 5000ms with retry backoff.", source_id: "src-git-commit-42" }
