@@ -41,6 +41,21 @@ app.include_router(readiness_router)
 @app.on_event("startup")
 def on_startup():
     init_db()
+    # Auto-seed initial demo dataset if database has no users or proj-cairn-mvp
+    from app.db.database import SessionLocal
+    from app.models.models import User
+    from app.seeds.seed_demo_data import seed_synthetic_project
+    
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == "usr-mgr-01").first()
+        if not user:
+            print("Auto-seeding initial Cairn synthetic project data...")
+            seed_synthetic_project(db)
+    except Exception as e:
+        print(f"Auto-seed exception: {e}")
+    finally:
+        db.close()
 
 @app.get("/health")
 @app.get("/api/health")
