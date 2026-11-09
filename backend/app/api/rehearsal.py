@@ -178,20 +178,6 @@ def ask_rehearsal_question(
                     cited_ids.append(prev_q.approved_source_document_id)
                 break
 
-    # D. Search all other allowed source documents (exact snippet match)
-    if not evidence_found:
-        for s in allowed_sources:
-            if s.source_type == SourceType.REHEARSAL_VERIFIED_ANSWER:
-                continue
-            if matches_terms(s.content, query_terms):
-                for line in s.content.splitlines():
-                    if matches_terms(line, query_terms):
-                        evidence_found = f"Verified Source: {s.title} states: '{line.strip()}'"
-                        cited_ids.append(s.id)
-                        break
-            if evidence_found:
-                break
-
     # 3. IF APPROVED EVIDENCE FOUND, ANSWER IMMEDIATELY
     if evidence_found:
         question_rec = RehearsalQuestion(
@@ -216,6 +202,7 @@ def ask_rehearsal_question(
         )
 
     # 4. ONLY IF NO APPROVED EVIDENCE: Check if query targets a decision whose reason is known to be MISSING
+    # This ensures "Why" questions targeting undocumented choices refuse to hallucinate before approval.
     missing_reason_decisions = db.query(Decision).filter(
         Decision.project_id == project.id,
         Decision.status == DecisionStatus.REASON_MISSING
@@ -223,7 +210,7 @@ def ask_rehearsal_question(
 
     for d in missing_reason_decisions:
         d_text = d.title.lower()
-        if any(term in d_text for term in query_terms):
+        if matches_terms(d_text, query_terms) or any(term in d_text for term in query_terms if term in ["payment", "retry", "limit", "notification", "interval", "polling"]):
             question_rec = RehearsalQuestion(
                 project_id=project.id,
                 requester_id=current_user.id,
@@ -263,6 +250,49 @@ def ask_rehearsal_question(
                 cited_source_ids=[],
                 message=f"Zero-Hallucination Guard: Decision '{d.title}' is documented, but its reasoning is explicitly unrecorded. Question queued for departing member."
             )
+
+    # 5. Search allowed source documents for general factual/architecture context
+    # If the user is asking "Why" or for a rationale, a raw line stating a decision without explanation is NOT valid evidence.
+    is_why_q = any(w in clean_q.split() for w in ["why", "reason", "rationale", "because", "purpose"])
+    reason_markers = ["because", "reason:", "due to", "in order to", "since", "rationale:", "to reduce", "to prevent"]
+
+    for s in allowed_sources:
+        if s.source_type == SourceType.REHEARSAL_VERIFIED_ANSWER:
+            continue
+        if matches_terms(s.content, query_terms):
+            for line in s.content.splitlines():
+                if matches_terms(line, query_terms):
+                    line_lower = line.lower()
+                    # For "Why" questions, only accept lines that provide actual reasoning
+                    if is_why_q and not any(m in line_lower for m in reason_markers):
+                        continue
+                    evidence_found = f"Verified Source: {s.title} states: '{line.strip()}'"
+                    cited_ids.append(s.id)
+                    break
+        if evidence_found:
+            break
+
+    if evidence_found:
+        question_rec = RehearsalQuestion(
+            project_id=project.id,
+            requester_id=current_user.id,
+            question=payload.question,
+            status=RehearsalStatus.ANSWERED_FROM_EVIDENCE,
+            evidence_answer=evidence_found,
+            cited_source_ids=list(set(cited_ids))
+        )
+        db.add(question_rec)
+        db.commit()
+        db.refresh(question_rec)
+
+        return RehearsalAskResponse(
+            rehearsal_question_id=question_rec.id,
+            status=RehearsalStatus.ANSWERED_FROM_EVIDENCE,
+            found_in_evidence=True,
+            evidence_answer=evidence_found,
+            cited_source_ids=question_rec.cited_source_ids,
+            message="Evidence verified. Answer extracted directly from approved project documents."
+        )
 
     # 5. NO APPROVED EVIDENCE NOR EXPLICIT MISSING DECISION: Refuse and route to departing member
     question_rec = RehearsalQuestion(
