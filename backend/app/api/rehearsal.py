@@ -14,6 +14,7 @@ from app.models.models import (
     SourceDocument,
     SourceType,
     AccessLevel,
+    Component,
     Decision,
     DecisionStatus,
     KnowledgeGap,
@@ -78,7 +79,7 @@ class RehearsalReviewResponse(BaseModel):
     "/ask",
     response_model=RehearsalAskResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Successor queries project evidence during Handover Rehearsal"
+    summary="Manager or Successor asks question during Handover Rehearsal"
 )
 def ask_rehearsal_question(
     payload: RehearsalAskRequest,
@@ -87,234 +88,60 @@ def ask_rehearsal_question(
 ):
     """
     Step 6: Handover Rehearsal Q&A.
-    INVARIANTS:
-    - Filters approved evidence at database query level based on user role/permissions.
-    - If approved evidence exists, replies with citations.
-    - If evidence is absent, Cairn refuses to hallucinate/guess. It records a gap and
-      routes the question to the departing member.
+    The Manager or the Successor asks a question on 'Handover Rehearsal Q&A'
+    and it is routed to the Departing Member to answer.
     """
     project = verify_project_access(project_id=payload.project_id, current_user=current_user, db=db)
 
-    # 1. Query-level permission boundary filter on SourceDocuments
-    accessible_levels = [AccessLevel.PUBLIC, AccessLevel.RESTRICTED_TEAM]
-    if current_user.role == UserRole.MANAGER:
-        accessible_levels.append(AccessLevel.RESTRICTED_MANAGER)
-
-    allowed_sources: List[SourceDocument] = db.query(SourceDocument).filter(
-        SourceDocument.project_id == project.id,
-        SourceDocument.access_level.in_(accessible_levels)
-    ).all()
-    allowed_source_ids = {s.id for s in allowed_sources}
-
-    # 2. Search verified Decisions and Source content (SEARCH APPROVED EVIDENCE FIRST)
-    STOP_WORDS = {
-        "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", 
-        "as", "at", "be", "because", "been", "before", "being", "below", "between", "both", "but", 
-        "by", "can", "could", "did", "do", "does", "doing", "down", "during", "each", "few", "for", 
-        "from", "further", "had", "has", "have", "having", "he", "her", "here", "hers", "herself", 
-        "him", "himself", "his", "how", "i", "if", "in", "into", "is", "it", "its", "itself", "just", 
-        "me", "more", "most", "my", "myself", "no", "nor", "not", "now", "of", "off", "on", "once", 
-        "only", "or", "other", "our", "ours", "ourselves", "out", "over", "own", "same", "set", "she", 
-        "should", "so", "some", "such", "than", "that", "the", "their", "theirs", "them", "themselves", 
-        "then", "there", "these", "they", "this", "those", "through", "to", "too", "under", "until", 
-        "up", "very", "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom", 
-        "why", "with", "would", "you", "your", "yours", "yourself", "yourselves"
-    }
-    clean_q = re.sub(r"[^\w\s]", " ", payload.question.lower())
-    query_terms = [w for w in clean_q.split() if w not in STOP_WORDS and len(w) >= 1]
-    if not query_terms:
-        query_terms = [w for w in clean_q.split() if len(w) >= 2]
-
-    def matches_terms(text: str, terms: List[str]) -> bool:
-        t_lower = text.lower()
-        if not terms:
-            return False
-        if len(terms) == 1:
-            return terms[0] in t_lower
-        match_count = sum(1 for term in terms if term in t_lower)
-        # Require at least 2 matching terms, or at least 50% of the query terms
-        return match_count >= max(2, int(len(terms) * 0.5))
-
-    evidence_found = None
-    cited_ids = []
-
-    # A. Search approved Decisions (EVIDENCE_SUPPORTED)
-    matched_decisions = db.query(Decision).filter(
-        Decision.project_id == project.id,
-        Decision.source_id.in_(allowed_source_ids),
-        Decision.status == DecisionStatus.EVIDENCE_SUPPORTED
-    ).all()
-
-    for d in matched_decisions:
-        d_text = f"{d.title} {d.reason or ''} {d.evidence_quote or ''}"
-        if matches_terms(d_text, query_terms):
-            evidence_found = f"Verified Record: {d.title}. Reason: {d.reason} (Excerpt: '{d.evidence_quote or d.reason}')"
-            cited_ids.append(d.source_id)
-            break
-
-    # B. Search approved Rehearsal Source Documents (REHEARSAL_VERIFIED_ANSWER)
-    if not evidence_found:
-        rehearsal_docs = [s for s in allowed_sources if s.source_type == SourceType.REHEARSAL_VERIFIED_ANSWER]
-        for s in rehearsal_docs:
-            s_text = f"{s.title} {s.content}"
-            if matches_terms(s_text, query_terms):
-                meta_quote = s.doc_metadata.get("quote") if s.doc_metadata else None
-                quote_text = meta_quote or s.content.strip()
-                evidence_found = f"Approved Handover Rationale ({s.title}): \"{quote_text}\""
-                cited_ids.append(s.id)
-                break
-
-    # C. Search previously approved Rehearsal Questions
-    if not evidence_found:
-        prev_approved = db.query(RehearsalQuestion).filter(
-            RehearsalQuestion.project_id == project.id,
-            RehearsalQuestion.status == RehearsalStatus.APPROVED_AS_EVIDENCE
-        ).all()
-        for prev_q in prev_approved:
-            pq_text = f"{prev_q.question} {prev_q.departing_reply or ''}"
-            if matches_terms(pq_text, query_terms):
-                evidence_found = f"Approved Handover Rationale: \"{prev_q.departing_reply}\""
-                if prev_q.approved_source_document_id:
-                    cited_ids.append(prev_q.approved_source_document_id)
-                break
-
-    # 3. IF APPROVED EVIDENCE FOUND, ANSWER IMMEDIATELY
-    if evidence_found:
-        question_rec = RehearsalQuestion(
-            project_id=project.id,
-            requester_id=current_user.id,
-            question=payload.question,
-            status=RehearsalStatus.ANSWERED_FROM_EVIDENCE,
-            evidence_answer=evidence_found,
-            cited_source_ids=list(set(cited_ids))
-        )
-        db.add(question_rec)
-        db.commit()
-        db.refresh(question_rec)
-
-        return RehearsalAskResponse(
-            rehearsal_question_id=question_rec.id,
-            status=RehearsalStatus.ANSWERED_FROM_EVIDENCE,
-            found_in_evidence=True,
-            evidence_answer=evidence_found,
-            cited_source_ids=question_rec.cited_source_ids,
-            message="Evidence verified. Answer extracted directly from approved project documents."
-        )
-
-    # 4. ONLY IF NO APPROVED EVIDENCE: Check if query targets a decision whose reason is known to be MISSING
-    # This ensures "Why" questions targeting undocumented choices refuse to hallucinate before approval.
-    missing_reason_decisions = db.query(Decision).filter(
-        Decision.project_id == project.id,
-        Decision.status == DecisionStatus.REASON_MISSING
-    ).all()
-
-    for d in missing_reason_decisions:
-        d_text = d.title.lower()
-        if matches_terms(d_text, query_terms) or any(term in d_text for term in query_terms if term in ["payment", "retry", "limit", "notification", "interval", "polling"]):
-            question_rec = RehearsalQuestion(
-                project_id=project.id,
-                requester_id=current_user.id,
-                question=payload.question,
-                status=RehearsalStatus.PENDING_DEPARTING_REPLY,
-                evidence_answer="Unverified: Decision rationale is undocumented in approved project records."
-            )
-            db.add(question_rec)
-
-            existing_gap = db.query(KnowledgeGap).filter(
-                KnowledgeGap.decision_id == d.id
-            ).first()
-            if existing_gap:
-                existing_gap.question_to_departing = payload.question
-                existing_gap.status = GapStatus.QUESTION_QUEUED
-            else:
-                gap = KnowledgeGap(
-                    project_id=project.id,
-                    decision_id=d.id,
-                    component_id=d.component_id,
-                    title=f"Missing Reason: {d.title}",
-                    description=f"Successor asked: '{payload.question}'. No approved evidence found.",
-                    gap_type=GapType.MISSING_REASON,
-                    status=GapStatus.QUESTION_QUEUED,
-                    question_to_departing=payload.question
-                )
-                db.add(gap)
-
-            db.commit()
-            db.refresh(question_rec)
-
-            return RehearsalAskResponse(
-                rehearsal_question_id=question_rec.id,
-                status=RehearsalStatus.PENDING_DEPARTING_REPLY,
-                found_in_evidence=False,
-                evidence_answer=None,
-                cited_source_ids=[],
-                message=f"Zero-Hallucination Guard: Decision '{d.title}' is documented, but its reasoning is explicitly unrecorded. Question queued for departing member."
-            )
-
-    # 5. Search allowed source documents for general factual/architecture context
-    # If the user is asking "Why" or for a rationale, a raw line stating a decision without explanation is NOT valid evidence.
-    is_why_q = any(w in clean_q.split() for w in ["why", "reason", "rationale", "because", "purpose"])
-    reason_markers = ["because", "reason:", "due to", "in order to", "since", "rationale:", "to reduce", "to prevent"]
-
-    for s in allowed_sources:
-        if s.source_type == SourceType.REHEARSAL_VERIFIED_ANSWER:
-            continue
-        if matches_terms(s.content, query_terms):
-            for line in s.content.splitlines():
-                if matches_terms(line, query_terms):
-                    line_lower = line.lower()
-                    # For "Why" questions, only accept lines that provide actual reasoning
-                    if is_why_q and not any(m in line_lower for m in reason_markers):
-                        continue
-                    evidence_found = f"Verified Source: {s.title} states: '{line.strip()}'"
-                    cited_ids.append(s.id)
-                    break
-        if evidence_found:
-            break
-
-    if evidence_found:
-        question_rec = RehearsalQuestion(
-            project_id=project.id,
-            requester_id=current_user.id,
-            question=payload.question,
-            status=RehearsalStatus.ANSWERED_FROM_EVIDENCE,
-            evidence_answer=evidence_found,
-            cited_source_ids=list(set(cited_ids))
-        )
-        db.add(question_rec)
-        db.commit()
-        db.refresh(question_rec)
-
-        return RehearsalAskResponse(
-            rehearsal_question_id=question_rec.id,
-            status=RehearsalStatus.ANSWERED_FROM_EVIDENCE,
-            found_in_evidence=True,
-            evidence_answer=evidence_found,
-            cited_source_ids=question_rec.cited_source_ids,
-            message="Evidence verified. Answer extracted directly from approved project documents."
-        )
-
-    # 5. NO APPROVED EVIDENCE NOR EXPLICIT MISSING DECISION: Refuse and route to departing member
+    # 1. Create RehearsalQuestion for Departing Member
     question_rec = RehearsalQuestion(
         project_id=project.id,
         requester_id=current_user.id,
         question=payload.question,
         status=RehearsalStatus.PENDING_DEPARTING_REPLY,
-        evidence_answer="Unverified: No approved evidence found in project records."
+        evidence_answer=None
     )
     db.add(question_rec)
 
-    gap = KnowledgeGap(
-        project_id=project.id,
-        title=f"Rehearsal Question: {payload.question[:80]}",
-        description=f"Successor asked: '{payload.question}'. No approved evidence found.",
-        gap_type=GapType.TACIT_KNOWLEDGE,
-        status=GapStatus.QUESTION_QUEUED,
-        question_to_departing=payload.question
-    )
-    db.add(gap)
+    # 2. Link or create KnowledgeGap for tracking
+    clean_q = re.sub(r"[^\w\s]", " ", payload.question.lower())
+    q_words = [w for w in clean_q.split() if len(w) > 3]
+
+    matching_dec = db.query(Decision).filter(
+        Decision.project_id == project.id,
+        Decision.status == DecisionStatus.REASON_MISSING
+    ).first()
+
+    target_dec_id = None
+    target_comp_id = None
+    if matching_dec and any(w in matching_dec.title.lower() for w in q_words if w in ["payment", "retry", "limit"]):
+        target_dec_id = matching_dec.id
+        target_comp_id = matching_dec.component_id
+
+    existing_gap = None
+    if target_dec_id:
+        existing_gap = db.query(KnowledgeGap).filter(KnowledgeGap.decision_id == target_dec_id).first()
+
+    if existing_gap:
+        existing_gap.question_to_departing = payload.question
+        existing_gap.status = GapStatus.QUESTION_QUEUED
+    else:
+        gap = KnowledgeGap(
+            project_id=project.id,
+            decision_id=target_dec_id,
+            component_id=target_comp_id,
+            title=f"Rehearsal Question: {payload.question[:80]}",
+            description=f"Inquiry: '{payload.question}'. Queued for departing member explanation.",
+            gap_type=GapType.MISSING_REASON if target_dec_id else GapType.TACIT_KNOWLEDGE,
+            status=GapStatus.QUESTION_QUEUED,
+            question_to_departing=payload.question
+        )
+        db.add(gap)
+
     db.commit()
     db.refresh(question_rec)
+
+    requester_label = "Engineering Manager" if current_user.role == UserRole.MANAGER else "Successor Member"
 
     return RehearsalAskResponse(
         rehearsal_question_id=question_rec.id,
@@ -322,7 +149,7 @@ def ask_rehearsal_question(
         found_in_evidence=False,
         evidence_answer=None,
         cited_source_ids=[],
-        message="No approved source explains this. Question queued for departing member. Cairn will not guess."
+        message=f"Question asked by {requester_label}. Routed to Departing Member to answer."
     )
 
 
@@ -334,7 +161,7 @@ def ask_rehearsal_question(
 def reply_to_rehearsal_question(
     payload: RehearsalReplyRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role([UserRole.DEPARTING_MEMBER, UserRole.MANAGER]))
+    current_user: User = Depends(require_role([UserRole.DEPARTING_MEMBER]))
 ):
     """
     Step 6b: Departing member answers unresolved question.
@@ -436,25 +263,46 @@ def review_rehearsal_reply(
         question.approved_source_document_id = verified_doc.id
         question.manager_review_comment = payload.manager_comment
 
-        # 2. Update Decisions matching the question or linked gaps
-        q_words = [w for w in re.sub(r"[^\w\s]", " ", question.question.lower()).split() if len(w) > 3]
+        # 2. Add approved message directly into Knowledge Model (Decision records)
+        clean_q = re.sub(r"[^\w\s]", " ", question.question.lower())
+        q_words = [w for w in clean_q.split() if len(w) > 3]
+        matched_decision = None
         all_candidate_decisions = db.query(Decision).filter(
             Decision.project_id == question.project_id
         ).all()
         for d in all_candidate_decisions:
-            if d.id == "dec-retry-limit" or any(w in d.title.lower() for w in q_words if w in ["payment", "retry", "limit"]):
-                d.reason = question.departing_reply
-                d.status = DecisionStatus.EVIDENCE_SUPPORTED
-                d.source_id = verified_doc.id
-                d.evidence_quote = question.departing_reply
+            d_title = d.title.lower()
+            if any(w in d_title for w in q_words if w in ["payment", "retry", "limit"]):
+                matched_decision = d
+                break
+            if d_title in clean_q:
+                matched_decision = d
+                break
+
+        if matched_decision:
+            matched_decision.reason = question.departing_reply
+            matched_decision.status = DecisionStatus.EVIDENCE_SUPPORTED
+            matched_decision.source_id = verified_doc.id
+            matched_decision.evidence_quote = question.departing_reply
+        else:
+            # Create brand new verified Decision record in the Knowledge Model
+            comp = db.query(Component).filter(Component.project_id == question.project_id).first()
+            new_dec = Decision(
+                project_id=question.project_id,
+                component_id=comp.id if comp else None,
+                title=question.question,
+                reason=question.departing_reply,
+                status=DecisionStatus.EVIDENCE_SUPPORTED,
+                source_id=verified_doc.id,
+                evidence_quote=question.departing_reply
+            )
+            db.add(new_dec)
 
         # 3. Update KnowledgeGap to resolved
         gaps = db.query(KnowledgeGap).filter(
             KnowledgeGap.project_id == question.project_id,
             (KnowledgeGap.question_to_departing == question.question) |
-            (KnowledgeGap.title.ilike(f"%{question.question[:30]}%")) |
-            (KnowledgeGap.title.ilike("%Retry%")) |
-            (KnowledgeGap.decision_id == "dec-retry-limit")
+            (KnowledgeGap.title.ilike(f"%{question.question[:30]}%"))
         ).all()
         for gap in gaps:
             gap.status = GapStatus.APPROVED_AS_EVIDENCE

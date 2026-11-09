@@ -327,21 +327,21 @@ export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
                 </div>
               )}
 
-              {/* STATE D: Approved and Minted as Permanent Evidence */}
+              {/* STATE D: Approved and Added to Knowledge Model */}
               {ex.status === 'APPROVED_AS_EVIDENCE' && (
-                <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 max-w-2xl space-y-2 shadow-xs">
+                <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 max-w-2xl space-y-2.5 shadow-xs">
                   <div className="flex items-center justify-between text-xs font-mono text-emerald-900 font-bold">
                     <span className="flex items-center gap-1.5">
-                      <ShieldCheck className="w-4 h-4 text-emerald-700" /> APPROVED & MINTED AS IMMUTABLE EVIDENCE
+                      <CheckCircle2 className="w-4 h-4 text-emerald-700" /> APPROVED & ADDED TO KNOWLEDGE MODEL
                     </span>
-                    <span className="text-[10px] bg-emerald-100 border border-emerald-300 text-emerald-950 px-2 py-0.5 rounded">
-                      Document Minted
+                    <span className="text-[10px] bg-emerald-200 text-emerald-950 px-2 py-0.5 rounded font-bold border border-emerald-300">
+                      Knowledge Model Updated
                     </span>
                   </div>
                   <p className="text-xs text-ink-900 leading-relaxed font-sans">{ex.departing_reply}</p>
-                  <div className="pt-2 border-t border-emerald-200 flex items-center justify-between text-[10px] font-mono text-ink-600">
-                    <span>MANAGER NOTE: {ex.manager_review_comment || 'Approved by Manager'}</span>
-                    <span className="text-orange-brand font-bold">EVIDENCE ID: {ex.approved_source_document_id}</span>
+                  <div className="pt-2 border-t border-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[10px] font-mono text-ink-600">
+                    <span>MANAGER SIGN-OFF: {ex.manager_review_comment || 'Approved by Manager'}</span>
+                    <span className="text-emerald-800 font-bold">MINTED SOURCE: {ex.approved_source_document_id}</span>
                   </div>
                 </div>
               )}
@@ -352,23 +352,55 @@ export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
 
       {/* Input Bar */}
       <div className="p-4 border-t border-cream-300 bg-cream-100">
-        <form onSubmit={handleAskSubmit} className="flex gap-3">
-          <input
-            type="text"
-            placeholder="Ask successor question (e.g. Why did we pick this database? Why is retry set to 3?)..."
-            value={newQuestion}
-            onChange={(e) => setNewQuestion(e.target.value)}
-            disabled={submittingQuestion}
-            className="flex-1 bg-cream-50 border border-cream-300 rounded-xl px-4 py-2.5 text-xs text-ink-950 placeholder-ink-400 focus:outline-none focus:border-orange-brand transition-colors shadow-xs"
-          />
-          <button
-            type="submit"
-            disabled={submittingQuestion || !newQuestion.trim()}
-            className="bg-orange-brand hover:bg-orange-bright disabled:opacity-50 text-cream-50 font-bold text-xs px-5 py-2.5 rounded-xl flex items-center gap-2 shadow-sm shadow-orange-brand/30 transition-all"
-          >
-            <Send className="w-3.5 h-3.5" /> Ask
-          </button>
-        </form>
+        {currentRole === 'DEPARTING_MEMBER' ? (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-amber-100/80 border border-amber-300 rounded-xl">
+            <div className="flex items-center gap-2 text-xs font-mono text-amber-950 font-medium">
+              <UserMinus className="w-4 h-4 text-amber-700 flex-shrink-0" />
+              <span>Acting as Departing Member. To ask questions, switch to Manager or Successor.</span>
+            </div>
+            {onSwitchRole && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onSwitchRole('INCOMING_MEMBER')}
+                  className="bg-orange-brand hover:bg-orange-bright text-cream-50 font-mono text-xs font-bold px-3 py-1.5 rounded-lg transition-colors shadow-xs"
+                >
+                  Ask as Successor
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSwitchRole('MANAGER')}
+                  className="bg-purple-700 hover:bg-purple-800 text-cream-50 font-mono text-xs font-bold px-3 py-1.5 rounded-lg transition-colors shadow-xs"
+                >
+                  Ask as Manager
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <form onSubmit={handleAskSubmit} className="flex gap-3">
+            <input
+              type="text"
+              placeholder={
+                currentRole === 'MANAGER'
+                  ? "Ask question to Departing Member as Engineering Manager (e.g. Why is the payment retry limit set to 3?)..."
+                  : "Ask question to Departing Member as Successor (e.g. Why is the payment retry limit set to 3?)..."
+              }
+              value={newQuestion}
+              onChange={(e) => setNewQuestion(e.target.value)}
+              disabled={submittingQuestion}
+              className="flex-1 bg-cream-50 border border-cream-300 rounded-xl px-4 py-2.5 text-xs text-ink-950 placeholder-ink-400 focus:outline-none focus:border-orange-brand transition-colors shadow-xs"
+            />
+            <button
+              type="submit"
+              disabled={submittingQuestion || !newQuestion.trim()}
+              className="bg-orange-brand hover:bg-orange-bright disabled:opacity-50 text-cream-50 font-bold text-xs px-5 py-2.5 rounded-xl flex items-center gap-2 shadow-sm shadow-orange-brand/30 transition-all whitespace-nowrap"
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span>{currentRole === 'MANAGER' ? 'Ask as Manager' : 'Ask as Successor'}</span>
+            </button>
+          </form>
+        )}
       </div>
     </div>
   );

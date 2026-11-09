@@ -299,13 +299,14 @@ export const CairnWorkspace: React.FC = () => {
 
   // Handle Asking Question
   const handleAskQuestion = async (questionText: string) => {
+    const requesterLabel = currentRole === 'MANAGER' ? 'Engineering Manager' : 'Successor Member';
     try {
       const uid = USER_IDS[currentRole];
       const res = await askRehearsalQuestion(PROJECT_ID, questionText, uid);
       const newEx: RehearsalExchange = {
         id: res.rehearsal_question_id,
         project_id: PROJECT_ID,
-        requester_name: "Successor Member",
+        requester_name: requesterLabel,
         question: questionText,
         status: res.status,
         evidence_answer: res.evidence_answer,
@@ -314,29 +315,16 @@ export const CairnWorkspace: React.FC = () => {
       };
       setExchanges(prev => [newEx, ...prev]);
     } catch (err) {
-      if (questionText.toLowerCase().includes("postgres")) {
-        setExchanges(prev => [{
-          id: `ex-${Date.now()}`,
-          project_id: PROJECT_ID,
-          requester_name: "Successor Member",
-          question: questionText,
-          status: "ANSWERED_FROM_EVIDENCE",
-          evidence_answer: "Verified Record: Use PostgreSQL for Financial Ledger. Reason: Relational transactions and strict ACID compliance needed for ledger auditing (Excerpt: 'because relational transactions and strict ACID compliance are non-negotiable for financial auditing')",
-          cited_source_ids: ["src-doc-arch-01"],
-          created_at: new Date().toISOString()
-        }, ...prev]);
-      } else {
-        setExchanges(prev => [{
-          id: `ex-${Date.now()}`,
-          project_id: PROJECT_ID,
-          requester_name: "Successor Member",
-          question: questionText,
-          status: "PENDING_DEPARTING_REPLY",
-          evidence_answer: null,
-          cited_source_ids: [],
-          created_at: new Date().toISOString()
-        }, ...prev]);
-      }
+      setExchanges(prev => [{
+        id: `ex-${Date.now()}`,
+        project_id: PROJECT_ID,
+        requester_name: requesterLabel,
+        question: questionText,
+        status: "PENDING_DEPARTING_REPLY",
+        evidence_answer: null,
+        cited_source_ids: [],
+        created_at: new Date().toISOString()
+      }, ...prev]);
     }
   };
 
@@ -405,21 +393,41 @@ export const CairnWorkspace: React.FC = () => {
     if (approved) {
       const targetExchange = exchanges.find(e => e.id === questionId);
       const replyQuote = targetExchange?.departing_reply || comment || "Approved payment retry limit SLA";
-      setKnowledgeModel(prev => ({
-        ...prev,
-        decisions: prev.decisions.map(d => {
-          if (d.id === "dec-retry-limit" || d.id === "dec-2" || d.title.toLowerCase().includes("retry")) {
-            return {
-              ...d,
-              status: "evidence_supported",
-              reason: replyQuote,
-              source_id: `src-doc-rehearsal-${Date.now()}`,
-              evidence_quote: replyQuote
-            };
-          }
-          return d;
-        })
-      }));
+      setKnowledgeModel(prev => {
+        const found = prev.decisions.some(d => d.id === "dec-retry-limit" || d.id === "dec-2" || d.title.toLowerCase().includes("retry") || d.title === targetExchange?.question);
+        if (found) {
+          return {
+            ...prev,
+            decisions: prev.decisions.map(d => {
+              if (d.id === "dec-retry-limit" || d.id === "dec-2" || d.title.toLowerCase().includes("retry") || d.title === targetExchange?.question) {
+                return {
+                  ...d,
+                  status: "evidence_supported",
+                  reason: replyQuote,
+                  source_id: `src-doc-rehearsal-${Date.now()}`,
+                  evidence_quote: replyQuote
+                };
+              }
+              return d;
+            })
+          };
+        } else {
+          return {
+            ...prev,
+            decisions: [
+              ...prev.decisions,
+              {
+                id: `dec-${Date.now()}`,
+                title: targetExchange?.question || "Handover Approved Decision",
+                reason: replyQuote,
+                status: "evidence_supported",
+                source_id: `src-doc-rehearsal-${Date.now()}`,
+                evidence_quote: replyQuote
+              }
+            ]
+          };
+        }
+      });
 
       setScoreData(prev => {
         const newEvidence = Math.min(40, prev.evidence_coverage_score + 14.0);
