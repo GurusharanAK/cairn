@@ -16,7 +16,9 @@ from app.models.models import (
     Dependency,
     FailureRecord,
     KnowledgeGap,
-    GapStatus
+    GapStatus,
+    RehearsalQuestion,
+    RehearsalStatus
 )
 
 router = APIRouter(prefix="/api/projects", tags=["Successor Readiness & Handover"])
@@ -57,6 +59,58 @@ class HandoverPacket(BaseModel):
     verified_decisions: List[Dict[str, Any]]
     resolved_failure_playbooks: List[Dict[str, Any]]
     open_attention_items: List[Dict[str, Any]]
+
+
+class DecisionModelRead(BaseModel):
+    id: str
+    title: str
+    reason: Optional[str] = None
+    status: str
+    source_id: str
+    evidence_quote: Optional[str] = None
+    is_approved_query: bool = False
+
+
+class ComponentModelRead(BaseModel):
+    id: str
+    name: str
+    owner_name: str
+    status: str
+    source_id: str
+
+
+class DependencyModelRead(BaseModel):
+    id: str
+    source_name: str
+    target_name: str
+    type: str
+    is_hidden: bool
+    source_id: str
+
+
+class FailureModelRead(BaseModel):
+    id: str
+    title: str
+    error: str
+    fix: str
+    source_id: str
+
+
+class ApprovedQueryRead(BaseModel):
+    id: str
+    question: str
+    reply: Optional[str] = None
+    approved_source_id: Optional[str] = None
+    manager_comment: Optional[str] = None
+
+
+class KnowledgeModelResponse(BaseModel):
+    project_id: str
+    decisions: List[DecisionModelRead]
+    components: List[ComponentModelRead]
+    dependencies: List[DependencyModelRead]
+    failures: List[FailureModelRead]
+    approved_queries: List[ApprovedQueryRead]
 
 
 @router.get(
@@ -224,5 +278,112 @@ def get_handover_packet(
             "type": g.gap_type.value,
             "description": g.description
         } for g in gaps]
+    )
+
+
+@router.get(
+    "/{id}/knowledge-model",
+    response_model=KnowledgeModelResponse,
+    summary="Get reconstructed knowledge model with live decisions and approved queries"
+)
+def get_knowledge_model(
+    id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Returns the live reconstructed knowledge model for the project:
+    Decisions (including approved queries appended from rehearsal),
+    Components, Dependencies, Failures, and Approved Queries.
+    """
+    project = verify_project_access(project_id=id, current_user=current_user, db=db)
+
+    components = db.query(Component).filter(Component.project_id == project.id).all()
+    comp_map = {c.id: c.name for c in components}
+
+    decisions = db.query(Decision).filter(Decision.project_id == project.id).all()
+    dependencies = db.query(Dependency).filter(Dependency.project_id == project.id).all()
+    failures = db.query(FailureRecord).filter(FailureRecord.project_id == project.id).all()
+
+    approved_questions = db.query(RehearsalQuestion).filter(
+        RehearsalQuestion.project_id == project.id,
+        RehearsalQuestion.status == RehearsalStatus.APPROVED_AS_EVIDENCE
+    ).all()
+
+    decisions_list = []
+    seen_ids = set()
+
+    for d in decisions:
+        seen_ids.add(d.id)
+        is_query = (
+            (d.evidence_quote is not None and "Approved Rehearsal" in d.evidence_quote) or 
+            d.id.startswith("dec-ex-") or 
+            d.id.startswith("dec-rehearsal") or
+            d.title.startswith("Verified Query:")
+        )
+        decisions_list.append(DecisionModelRead(
+            id=d.id,
+            title=d.title,
+            reason=d.reason,
+            status=d.status.value if hasattr(d.status, "value") else str(d.status),
+            source_id=d.source_id,
+            evidence_quote=d.evidence_quote,
+            is_approved_query=is_query
+        ))
+
+    # Also make sure any approved questions that were approved are included in decisions
+    for q in approved_questions:
+        q_dec_id = f"dec-rehearsal-{q.id[:8]}"
+        if q_dec_id not in seen_ids and not any(d.title == q.question or d.title == f"Verified Query: {q.question}" or (d.evidence_quote and q.departing_reply and q.departing_reply in d.evidence_quote) for d in decisions_list):
+            decisions_list.append(DecisionModelRead(
+                id=q_dec_id,
+                title=f"Verified Query: {q.question}",
+                reason=q.departing_reply,
+                status=DecisionStatus.EVIDENCE_SUPPORTED.value,
+                source_id=q.approved_source_document_id or "verified-rehearsal",
+                evidence_quote=f"Approved Rehearsal Answer: {q.departing_reply}",
+                is_approved_query=True
+            ))
+
+    components_list = [ComponentModelRead(
+        id=c.id,
+        name=c.name,
+        owner_name=c.owner.full_name if c.owner else "Unassigned",
+        status=c.status.value if hasattr(c.status, "value") else str(c.status),
+        source_id=c.source_id
+    ) for c in components]
+
+    dependencies_list = [DependencyModelRead(
+        id=dep.id,
+        source_name=comp_map.get(dep.source_component_id, "Unknown"),
+        target_name=comp_map.get(dep.target_component_id, "Unknown"),
+        type=dep.dependency_type.value if hasattr(dep.dependency_type, "value") else str(dep.dependency_type),
+        is_hidden=dep.is_hidden,
+        source_id=dep.source_id
+    ) for dep in dependencies]
+
+    failures_list = [FailureModelRead(
+        id=f.id,
+        title=f.title,
+        error=f.error_message,
+        fix=f.attempted_fix,
+        source_id=f.source_id
+    ) for f in failures]
+
+    approved_queries_list = [ApprovedQueryRead(
+        id=q.id,
+        question=q.question,
+        reply=q.departing_reply,
+        approved_source_id=q.approved_source_document_id,
+        manager_comment=q.manager_review_comment
+    ) for q in approved_questions]
+
+    return KnowledgeModelResponse(
+        project_id=project.id,
+        decisions=decisions_list,
+        components=components_list,
+        dependencies=dependencies_list,
+        failures=failures_list,
+        approved_queries=approved_queries_list
     )
 

@@ -1,5 +1,15 @@
 // Cairn API Client
-const API_BASE = 'http://127.0.0.1:8000';
+export const API_BASE = typeof window !== 'undefined' && window.location.port === '3000'
+  ? 'http://127.0.0.1:8000'
+  : (typeof window !== 'undefined' && window.location.port !== '5173' && window.location.origin ? window.location.origin : 'http://127.0.0.1:8000');
+
+export async function resetDemoData() {
+  const res = await fetch(`${API_BASE}/api/demo/reset`, {
+    method: 'POST'
+  });
+  if (!res.ok) throw new Error(`Failed to reset demo data: ${res.statusText}`);
+  return res.json();
+}
 
 export async function fetchProjectScore(projectId: string, userId: string) {
   const res = await fetch(`${API_BASE}/api/projects/${projectId}/continuity-score`, {
@@ -79,4 +89,13 @@ export async function fetchHandoverPacket(projectId: string, userId: string) {
   if (!res.ok) throw new Error(`Failed to fetch handover packet: ${res.statusText}`);
   return res.json();
 }
+
+export async function fetchKnowledgeModel(projectId: string, userId: string) {
+  const res = await fetch(`${API_BASE}/api/projects/${projectId}/knowledge-model`, {
+    headers: { 'X-User-ID': userId }
+  });
+  if (!res.ok) throw new Error(`Failed to fetch knowledge model: ${res.statusText}`);
+  return res.json();
+}
+
 

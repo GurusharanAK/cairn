@@ -1,0 +1,15 @@
+{
+  "repo": "campus-commerce/orbit-pay",
+  "commits": [
+    {"sha": "a1b2c3d4e5f6", "author": "Meera Iyer", "date": "2026-09-13T09:10:00Z", "message": "Add PostgreSQL connection and base schema"},
+    {"sha": "b2c3d4e5f6a1", "author": "Arjun Rao", "date": "2026-09-15T14:30:00Z", "message": "Add auth middleware and per-environment signing key config"},
+    {"sha": "c3d4e5f6a1b2", "author": "Meera Iyer", "date": "2026-09-20T11:05:00Z", "message": "dashboard: fetch session via auth API before loading orders"},
+    {"sha": "d4e5f6a1b2c3", "author": "Arjun Rao", "date": "2026-09-24T16:45:00Z", "message": "Cap payment retries at 3 in retry logic"},
+    {"sha": "e5f6a1b2c3d4", "author": "Arjun Rao", "date": "2026-10-02T10:20:00Z", "message": "Set AUTH_JWKS_CACHE_SEC=0 to stop token refresh failures"}
+  ],
+  "branches": [
+    {"name": "main", "author": "Meera Iyer", "ahead_by": 0, "merged": true, "last_commit_message": "Set AUTH_JWKS_CACHE_SEC=0 to stop token refresh failures"},
+    {"name": "feature/retry-backoff", "author": "Arjun Rao", "ahead_by": 2, "merged": false, "last_commit_message": "WIP exponential backoff for card retries"},
+    {"name": "feature/token-rotation", "author": "Arjun Rao", "ahead_by": 4, "merged": false, "last_commit_message": "WIP rotate session tokens without logging users out"}
+  ]
+}

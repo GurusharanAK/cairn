@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { API_BASE } from '../api/client';
 import { 
   FileUp, 
   CheckCircle2, 
@@ -60,7 +61,7 @@ export const IngestionModal: React.FC<IngestionModalProps> = ({
     setResult(null);
 
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/projects/${projectId}/ingest`, {
+      const res = await fetch(`${API_BASE}/api/projects/${projectId}/ingest`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

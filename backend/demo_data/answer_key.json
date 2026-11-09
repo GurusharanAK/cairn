@@ -1,0 +1,28 @@
+{
+  "decisions": [
+    {"title_contains": "postgresql", "has_reason": true},
+    {"title_contains": "retries", "has_reason": false}
+  ],
+  "gaps": [
+    {"kind": "reason_missing", "subject_contains": "retries"},
+    {"kind": "single_owner", "subject_contains": "Authentication"},
+    {"kind": "unassigned_task", "subject_contains": "Rotate signing keys"},
+    {"kind": "invisible_work", "subject_contains": "token-rotation"},
+    {"kind": "conflict", "subject_contains": "Reporting export"},
+    {"kind": "undocumented_dependency", "subject_contains": "Dashboard -> Authentication"}
+  ],
+  "dependencies": [
+    {"from": "Payment retry", "to": "Authentication", "documented": true},
+    {"from": "Dashboard", "to": "Database", "documented": true},
+    {"from": "Dashboard", "to": "Authentication", "documented": false}
+  ],
+  "failures": [
+    {"issue_contains": "token refresh", "outcomes": ["failed", "failed", "worked"]}
+  ],
+  "stress": {
+    "member": "Arjun Rao",
+    "levels": {"Authentication": "HIGH", "Payment retry": "HIGH", "Dashboard": "MEDIUM"}
+  },
+  "restricted_sources": ["hr_private_notes.md"],
+  "restricted_phrases": ["vendor contract", "penalty fee", "compensation", "salary"]
+}

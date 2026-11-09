@@ -254,7 +254,32 @@ def seed_synthetic_project(db: Session):
         question_to_departing="What is the internal Auth session payload schema required by the Dashboard?"
     )
 
-    db.add_all([gap_reason, gap_hidden_dep])
+    # 9. Seed Initial Example Rehearsal Questions (Benchmark dialogue)
+    q_postgres = RehearsalQuestion(
+        id="ex-initial-01",
+        project_id=project.id,
+        requester_id=incoming_member.id,
+        question="Why did we decide to use PostgreSQL instead of MongoDB?",
+        status=RehearsalStatus.ANSWERED_FROM_EVIDENCE,
+        evidence_answer=(
+            "Verified Record: Use PostgreSQL for Financial Ledger. "
+            "Reason: Relational transactions and strict ACID compliance needed for ledger auditing "
+            "(Excerpt: 'Meeting notes: Relational transactions non-negotiable for billing.')"
+        ),
+        cited_source_ids=[doc_arch.id]
+    )
+
+    q_retry = RehearsalQuestion(
+        id="ex-initial-02",
+        project_id=project.id,
+        requester_id=incoming_member.id,
+        question="Why is the payment retry limit set to 3?",
+        status=RehearsalStatus.PENDING_DEPARTING_REPLY,
+        evidence_answer=None,
+        cited_source_ids=[]
+    )
+
+    db.add_all([gap_reason, gap_hidden_dep, q_postgres, q_retry])
     db.commit()
 
     print("Synthetic Demonstration Seed Loaded Successfully:")
@@ -265,10 +290,11 @@ def seed_synthetic_project(db: Session):
     print(f"- Components: 3, Decisions: 2 (1 with evidence, 1 reason_missing)")
     print(f"- Dependencies: 2 (1 explicit, 1 hidden)")
     print(f"- Knowledge Gaps: 2 open critical gaps")
+    print(f"- Rehearsal Questions: 2 example dialogue exchanges")
 
 
-if __name__ == "__main__":
-    from app.db.database import engine, Base
+def reset_database():
+    from app.db.database import engine, Base, SessionLocal, init_db
     Base.metadata.drop_all(bind=engine)
     init_db()
     db = SessionLocal()
@@ -276,4 +302,8 @@ if __name__ == "__main__":
         seed_synthetic_project(db)
     finally:
         db.close()
+
+
+if __name__ == "__main__":
+    reset_database()
 

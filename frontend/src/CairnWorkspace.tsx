@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { CairnLogo } from './components/CairnLogo';
 import { ContinuityScoreWidget, ScoreBreakdown } from './components/ContinuityScoreWidget';
 import { ContinuityStressTestView, StressTestReport } from './components/ContinuityStressTestView';
 import { HandoverRehearsalChat, RehearsalExchange, UserRole } from './components/HandoverRehearsalChat';
@@ -14,7 +15,9 @@ import {
   replyRehearsalQuestion, 
   reviewRehearsalQuestion,
   fetchReadinessScenarios,
-  fetchHandoverPacket
+  fetchHandoverPacket,
+  fetchKnowledgeModel,
+  resetDemoData
 } from './api/client';
 import { 
   Compass, 
@@ -27,6 +30,7 @@ import {
   CheckCircle2, 
   Sparkles,
   RefreshCw,
+  RotateCcw,
   FileUp,
   MessageSquare,
   FileText,
@@ -150,6 +154,43 @@ const FALLBACK_EXCHANGES: RehearsalExchange[] = [
   }
 ];
 
+const FALLBACK_KNOWLEDGE_MODEL = {
+  project_id: "proj-cairn-mvp",
+  decisions: [
+    {
+      id: "dec-db-choice",
+      title: "Use PostgreSQL for Financial Ledger",
+      reason: "Relational transactions and strict ACID compliance needed for ledger auditing",
+      status: "evidence_supported",
+      source_id: "src-doc-arch-01",
+      evidence_quote: "because relational transactions and strict ACID compliance are non-negotiable for financial auditing",
+      is_approved_query: false
+    },
+    {
+      id: "dec-retry-limit",
+      title: "Set Payment Retry Limit to 3",
+      reason: null,
+      status: "reason_missing",
+      source_id: "src-git-commit-42",
+      evidence_quote: "Decided to set payment retry limit to 3",
+      is_approved_query: false
+    }
+  ],
+  components: [
+    { id: "c-1", name: "Authentication Service", owner_name: "Departing Member", status: "ACTIVE", source_id: "src-doc-arch-01" },
+    { id: "c-2", name: "Payment Retry Worker", owner_name: "Departing Member", status: "ACTIVE", source_id: "src-git-commit-42" },
+    { id: "c-3", name: "Analytics Dashboard", owner_name: "Frontend Lead", status: "ACTIVE", source_id: "src-doc-arch-01" }
+  ],
+  dependencies: [
+    { id: "dep-1", source_name: "Payment Retry Worker", target_name: "Authentication Service", type: "CALLS_API", is_hidden: false, source_id: "src-doc-arch-01" },
+    { id: "dep-2", source_name: "Analytics Dashboard", target_name: "Authentication Service", type: "CALLS_API", is_hidden: true, source_id: "src-git-commit-42" }
+  ],
+  failures: [
+    { id: "f-1", title: "Stripe Webhook Concurrency Conflict", error: "HTTP 409 Conflict: Concurrent charge updates caused double capture.", fix: "Added redis distributed lock on charge.id key before processing webhook event.", source_id: "src-git-commit-42" }
+  ],
+  approved_queries: [] as any[]
+};
+
 type NavView = 'OVERVIEW' | 'STRESS_TEST' | 'REHEARSAL' | 'KNOWLEDGE' | 'DEPARTING_QUEUE' | 'READINESS';
 
 export const CairnWorkspace: React.FC = () => {
@@ -161,6 +202,7 @@ export const CairnWorkspace: React.FC = () => {
   const [exchanges, setExchanges] = useState<RehearsalExchange[]>(FALLBACK_EXCHANGES);
   const [scenarios, setScenarios] = useState<ReadinessScenario[]>([]);
   const [handoverPacket, setHandoverPacket] = useState<HandoverPacketData | null>(null);
+  const [knowledgeModel, setKnowledgeModel] = useState(FALLBACK_KNOWLEDGE_MODEL);
   const [isLiveConnected, setIsLiveConnected] = useState(false);
   const [quickQuestionInput, setQuickQuestionInput] = useState('');
 
@@ -174,12 +216,13 @@ export const CairnWorkspace: React.FC = () => {
   const loadLiveData = async () => {
     try {
       const uid = USER_IDS[currentRole];
-      const [scoreRes, stressRes, questionsRes, scenRes, packetRes] = await Promise.allSettled([
+      const [scoreRes, stressRes, questionsRes, scenRes, packetRes, kmRes] = await Promise.allSettled([
         fetchProjectScore(PROJECT_ID, uid),
         fetchStressTest(PROJECT_ID, uid),
         fetchRehearsalQuestions(PROJECT_ID, uid),
         fetchReadinessScenarios(PROJECT_ID, uid),
-        fetchHandoverPacket(PROJECT_ID, uid)
+        fetchHandoverPacket(PROJECT_ID, uid),
+        fetchKnowledgeModel(PROJECT_ID, uid)
       ]);
 
       if (scoreRes.status === 'fulfilled') {
@@ -204,13 +247,41 @@ export const CairnWorkspace: React.FC = () => {
       }
       if (scenRes.status === 'fulfilled') setScenarios(scenRes.value);
       if (packetRes.status === 'fulfilled') setHandoverPacket(packetRes.value);
+      if (kmRes.status === 'fulfilled' && kmRes.value) {
+        setKnowledgeModel(kmRes.value);
+      }
     } catch (e) {
       console.warn("Backend sync", e);
       setIsLiveConnected(false);
     }
   };
 
+  // Reset data on initial page load / reload so user-entered data is cleared and only example data remains
+  const isFirstMount = React.useRef(true);
+
+  const resetAllToExampleData = async () => {
+    try {
+      await resetDemoData();
+    } catch (err) {
+      console.warn("Could not reset demo data:", err);
+    }
+    setScoreData(FALLBACK_SCORE);
+    setStressReport(FALLBACK_STRESS);
+    setExchanges(FALLBACK_EXCHANGES);
+    setKnowledgeModel(FALLBACK_KNOWLEDGE_MODEL);
+    setQuickQuestionInput('');
+    await loadLiveData();
+  };
+
   useEffect(() => {
+    resetAllToExampleData();
+  }, []);
+
+  useEffect(() => {
+    if (isFirstMount.current) {
+      isFirstMount.current = false;
+      return;
+    }
     loadLiveData();
   }, [currentRole]);
 
@@ -298,6 +369,61 @@ export const CairnWorkspace: React.FC = () => {
     }));
 
     if (approved) {
+      setKnowledgeModel(prev => {
+        const approvedItem = exchanges.find(x => x.id === questionId);
+        const replyText = approvedItem?.departing_reply || comment || "Approved evidence rationale";
+        const qText = approvedItem?.question || "";
+        const isRetry = qText.toLowerCase().includes("retry");
+
+        let updated = false;
+        const newDecisions = prev.decisions.map(d => {
+          if ((isRetry && d.title.includes("Retry")) || d.title === qText || d.title.includes(qText)) {
+            updated = true;
+            return {
+              ...d,
+              reason: replyText,
+              status: "evidence_supported",
+              evidence_quote: `Approved Rehearsal Answer: ${replyText}`,
+              is_approved_query: true,
+              source_id: d.source_id || `src-doc-rehearsal-${questionId.slice(0, 8)}`
+            };
+          }
+          return d;
+        });
+
+        if (!updated && qText) {
+          newDecisions.push({
+            id: `dec-${questionId}`,
+            title: `Verified Query: ${qText}`,
+            reason: replyText,
+            status: "evidence_supported",
+            source_id: `src-doc-rehearsal-${questionId.slice(0, 8)}`,
+            evidence_quote: `Approved Rehearsal Answer: ${replyText}`,
+            is_approved_query: true
+          });
+        }
+
+        return {
+          ...prev,
+          decisions: newDecisions,
+          approved_queries: [
+            ...prev.approved_queries.filter(q => q.id !== questionId),
+            {
+              id: questionId,
+              question: qText,
+              reply: replyText,
+              approved_source_id: `src-doc-rehearsal-${questionId.slice(0, 8)}`,
+              manager_comment: comment
+            }
+          ]
+        };
+      });
+
+      // Synchronize live backend database state
+      setTimeout(() => {
+        loadLiveData();
+      }, 150);
+
       setScoreData(prev => ({
         ...prev,
         overall_score: Math.min(100, prev.overall_score + 18.0),
@@ -333,19 +459,8 @@ export const CairnWorkspace: React.FC = () => {
       <aside className="w-64 flex-shrink-0 bg-ink-900 border-r border-ink-850 flex flex-col justify-between z-20 text-cream-100 shadow-warm-lg">
         <div>
           {/* Brand Header */}
-          <div className="p-5 border-b border-ink-850 flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-orange-brand flex items-center justify-center shadow-md shadow-orange-brand/30">
-              <Compass className="w-5 h-5 text-cream-50" />
-            </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <h1 className="font-bold text-base tracking-tight text-cream-50 font-serif">Cairn</h1>
-                <span className="text-[9px] font-mono font-bold bg-orange-bright/20 text-orange-bright border border-orange-bright/40 px-1.5 py-0.2 rounded">
-                  2.0
-                </span>
-              </div>
-              <p className="text-[11px] text-cream-400">Continuity Intelligence</p>
-            </div>
+          <div className="p-5 border-b border-ink-850 flex items-center justify-between">
+            <CairnLogo size="md" showText={true} inverted={true} />
           </div>
 
           {/* Project Boundary Card (MVP Scope Lock) */}
@@ -514,17 +629,22 @@ export const CairnWorkspace: React.FC = () => {
       {/* 2. MAIN CENTERED CONTENT WORKSPACE (Warm Linen Backdrop)  */}
       {/* ========================================================= */}
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-y-auto bg-cream-200">
-        {/* Top Centered Header Bar */}
-        <header className="border-b border-cream-300 bg-cream-100/95 sticky top-0 z-10 backdrop-blur-md px-8 py-3.5 flex items-center justify-between shadow-warm-sm">
+        {/* Top Centered Header Bar with Cairn Logo & Breadcrumbs */}
+        <header className="border-b border-cream-300 bg-cream-100/95 sticky top-0 z-10 backdrop-blur-md px-8 py-3 flex items-center justify-between shadow-warm-sm">
           <div className="flex items-center gap-3">
-            <h2 className="text-sm font-bold text-ink-950 font-serif capitalize">
-              {activeView === 'OVERVIEW' && 'Continuity Overview & Diagnostic Breakdown'}
-              {activeView === 'STRESS_TEST' && 'Continuity Stress Test (Controlled Departure)'}
-              {activeView === 'REHEARSAL' && 'Handover Rehearsal Dialogue'}
-              {activeView === 'KNOWLEDGE' && 'Structured Project Knowledge Model'}
-              {activeView === 'DEPARTING_QUEUE' && 'Departing Member Knowledge Capture Queue'}
-              {activeView === 'READINESS' && 'Successor Readiness Drills & Handover Export'}
-            </h2>
+            <CairnLogo size="sm" showText={false} />
+            <div className="flex items-center gap-2 text-xs">
+              <span className="font-serif font-bold text-ink-950">Cairn</span>
+              <span className="text-cream-400 font-mono">/</span>
+              <h2 className="text-xs font-semibold text-ink-800 capitalize">
+                {activeView === 'OVERVIEW' && 'Continuity Overview & Diagnostic Breakdown'}
+                {activeView === 'STRESS_TEST' && 'Continuity Stress Test (Controlled Departure)'}
+                {activeView === 'REHEARSAL' && 'Handover Rehearsal Dialogue'}
+                {activeView === 'KNOWLEDGE' && 'Structured Project Knowledge Model'}
+                {activeView === 'DEPARTING_QUEUE' && 'Departing Member Knowledge Capture Queue'}
+                {activeView === 'READINESS' && 'Successor Readiness Drills & Handover Export'}
+              </h2>
+            </div>
           </div>
 
           {/* Quick Metrics Bar */}
@@ -540,6 +660,15 @@ export const CairnWorkspace: React.FC = () => {
               title="Refresh live metrics from backend"
             >
               <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+
+            <button 
+              onClick={resetAllToExampleData}
+              className="text-xs font-mono font-bold text-amber-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
+              title="Clear all entered data and restore example data"
+            >
+              <RotateCcw className="w-3.5 h-3.5 text-amber-700" />
+              <span className="hidden md:inline">Reset Example Data</span>
             </button>
           </div>
         </header>
@@ -928,36 +1057,11 @@ export const CairnWorkspace: React.FC = () => {
 
           {activeView === 'KNOWLEDGE' && (
             <KnowledgeModelExplorer
-              decisions={[
-                {
-                  id: "dec-1",
-                  title: "Use PostgreSQL for Financial Ledger",
-                  reason: "Relational transactions and strict ACID compliance needed for ledger auditing",
-                  status: "evidence_supported",
-                  source_id: "src-doc-arch-01",
-                  evidence_quote: "because relational transactions and strict ACID compliance are non-negotiable for financial auditing"
-                },
-                {
-                  id: "dec-2",
-                  title: "Set Payment Retry Limit to 3",
-                  reason: null,
-                  status: "reason_missing",
-                  source_id: "src-git-commit-42",
-                  evidence_quote: "Decided to set payment retry limit to 3"
-                }
-              ]}
-              components={[
-                { id: "c-1", name: "Authentication Service", owner_name: "Departing Member", status: "ACTIVE", source_id: "src-doc-arch-01" },
-                { id: "c-2", name: "Payment Retry Worker", owner_name: "Departing Member", status: "ACTIVE", source_id: "src-git-commit-42" },
-                { id: "c-3", name: "Analytics Dashboard", owner_name: "Frontend Lead", status: "ACTIVE", source_id: "src-doc-arch-01" }
-              ]}
-              dependencies={[
-                { id: "dep-1", source_name: "Payment Retry Worker", target_name: "Authentication Service", type: "CALLS_API", is_hidden: false, source_id: "src-doc-arch-01" },
-                { id: "dep-2", source_name: "Analytics Dashboard", target_name: "Authentication Service", type: "CALLS_API", is_hidden: true, source_id: "src-git-commit-42" }
-              ]}
-              failures={[
-                { id: "f-1", title: "Stripe Webhook Concurrency Conflict", error: "HTTP 409 Conflict: Concurrent charge updates caused double capture.", fix: "Added redis distributed lock on charge.id key before processing webhook event.", source_id: "src-git-commit-42" }
-              ]}
+              decisions={knowledgeModel.decisions}
+              components={knowledgeModel.components}
+              dependencies={knowledgeModel.dependencies}
+              failures={knowledgeModel.failures}
+              approvedQueries={knowledgeModel.approved_queries}
             />
           )}
 

@@ -1,5 +1,7 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from app.db.database import init_db
 from app.api.ingest import router as ingest_router
 from app.api.stress_test import router as stress_test_router
@@ -35,3 +37,14 @@ def on_startup():
 @app.get("/api/health")
 def health_check():
     return {"status": "healthy", "platform": "Cairn", "gravity_lock": "ACTIVE"}
+
+@app.post("/api/demo/reset")
+@app.get("/api/demo/reset")
+def reset_demo():
+    from app.seeds.seed_demo_data import reset_database
+    reset_database()
+    return {"status": "reset", "message": "Demo data reset to example benchmark state"}
+
+frontend_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist"))
+if os.path.exists(frontend_dist):
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="static")

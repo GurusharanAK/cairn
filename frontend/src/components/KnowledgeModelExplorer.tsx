@@ -20,6 +20,7 @@ interface KnowledgeModelExplorerProps {
     status: string;
     source_id: string;
     evidence_quote?: string | null;
+    is_approved_query?: boolean;
   }>;
   components: Array<{
     id: string;
@@ -43,15 +44,41 @@ interface KnowledgeModelExplorerProps {
     fix: string;
     source_id: string;
   }>;
+  approvedQueries?: Array<{
+    id: string;
+    question: string;
+    reply?: string | null;
+    approved_source_id?: string | null;
+    manager_comment?: string | null;
+  }>;
 }
 
 export const KnowledgeModelExplorer: React.FC<KnowledgeModelExplorerProps> = ({
   decisions,
   components,
   dependencies,
-  failures
+  failures,
+  approvedQueries = []
 }) => {
-  const [subTab, setSubTab] = useState<'DECISIONS' | 'COMPONENTS' | 'DEPENDENCIES' | 'FAILURES'>('DECISIONS');
+  const [subTab, setSubTab] = useState<'DECISIONS' | 'APPROVED_QUERIES' | 'COMPONENTS' | 'DEPENDENCIES' | 'FAILURES'>('DECISIONS');
+
+  // Derive all approved queries directly from decisions and approvedQueries prop
+  const allApprovedQueries = React.useMemo(() => {
+    const list = [...approvedQueries];
+    decisions.forEach(d => {
+      const isQuery = d.is_approved_query || (d.evidence_quote && d.evidence_quote.includes('Approved Rehearsal')) || d.title.startsWith('Verified Query:');
+      if (isQuery && !list.some(q => q.id === d.id || q.question === d.title || (d.title.includes(q.question)))) {
+        list.push({
+          id: d.id,
+          question: d.title.replace('Verified Query: ', ''),
+          reply: d.reason,
+          approved_source_id: d.source_id,
+          manager_comment: 'Approved as Evidence'
+        });
+      }
+    });
+    return list;
+  }, [decisions, approvedQueries]);
 
   return (
     <div className="bg-cream-50 border border-cream-300 rounded-2xl p-6 shadow-warm text-ink-900">
@@ -68,7 +95,7 @@ export const KnowledgeModelExplorer: React.FC<KnowledgeModelExplorerProps> = ({
         </div>
 
         {/* Tab Switcher Pills */}
-        <div className="flex items-center gap-1.5 bg-cream-100 p-1 rounded-xl border border-cream-300 text-xs font-mono shadow-xs">
+        <div className="flex flex-wrap items-center gap-1.5 bg-cream-100 p-1 rounded-xl border border-cream-300 text-xs font-mono shadow-xs">
           <button
             onClick={() => setSubTab('DECISIONS')}
             className={`px-3 py-1.5 rounded-lg transition-all ${
@@ -76,6 +103,19 @@ export const KnowledgeModelExplorer: React.FC<KnowledgeModelExplorerProps> = ({
             }`}
           >
             Decisions ({decisions.length})
+          </button>
+          <button
+            onClick={() => setSubTab('APPROVED_QUERIES')}
+            className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
+              subTab === 'APPROVED_QUERIES' ? 'bg-orange-brand text-cream-50 font-bold shadow-xs' : 'text-ink-700 hover:text-ink-950'
+            }`}
+          >
+            <span>Approved Queries</span>
+            <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+              subTab === 'APPROVED_QUERIES' ? 'bg-cream-50 text-orange-brand' : 'bg-orange-light text-orange-brand'
+            }`}>
+              {allApprovedQueries.length}
+            </span>
           </button>
           <button
             onClick={() => setSubTab('COMPONENTS')}
@@ -111,13 +151,14 @@ export const KnowledgeModelExplorer: React.FC<KnowledgeModelExplorerProps> = ({
           <div className="space-y-3">
             {decisions.map((dec) => {
               const hasReason = dec.status === 'evidence_supported';
+              const isApprovedQuery = dec.is_approved_query || (dec.evidence_quote && dec.evidence_quote.includes('Approved Rehearsal')) || dec.title.startsWith('Verified Query:');
               return (
                 <div 
                   key={dec.id}
                   className="bg-cream-100 border border-cream-300 p-4 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xs"
                 >
                   <div className="space-y-1.5 max-w-2xl">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="font-bold text-sm text-ink-950 font-sans">{dec.title}</span>
                       <span className={`text-[10px] font-mono px-2 py-0.5 rounded border font-semibold ${
                         hasReason 
@@ -126,6 +167,11 @@ export const KnowledgeModelExplorer: React.FC<KnowledgeModelExplorerProps> = ({
                       }`}>
                         {hasReason ? 'EVIDENCE SUPPORTED' : 'REASON MISSING'}
                       </span>
+                      {isApprovedQuery && (
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded border font-semibold bg-blue-100 text-blue-800 border-blue-300">
+                          APPROVED QUERY
+                        </span>
+                      )}
                     </div>
 
                     <p className="text-xs text-ink-700">
@@ -146,6 +192,55 @@ export const KnowledgeModelExplorer: React.FC<KnowledgeModelExplorerProps> = ({
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* TAB 2: APPROVED QUERIES */}
+        {subTab === 'APPROVED_QUERIES' && (
+          <div className="space-y-3">
+            <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-xl text-xs text-blue-900 flex items-center gap-2.5">
+              <CheckCircle2 className="w-4 h-4 text-blue-700 flex-shrink-0" />
+              <span>
+                These questions were asked during Handover Rehearsal, answered by departing experts, verified by the Engineering Manager, and permanently appended into the project's knowledge model.
+              </span>
+            </div>
+            {allApprovedQueries.length === 0 ? (
+              <div className="p-8 text-center bg-cream-100 rounded-xl border border-cream-300 text-xs text-ink-600">
+                No rehearsal queries approved yet. In the Rehearsal Dialogue, submit a reply and approve it as Manager to append verified knowledge here.
+              </div>
+            ) : (
+              allApprovedQueries.map((q) => (
+                <div 
+                  key={q.id}
+                  className="bg-cream-100 border border-blue-200 p-4 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xs"
+                >
+                  <div className="space-y-2 max-w-2xl">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-sm text-ink-950 font-sans">{q.question}</span>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded border font-semibold bg-emerald-100 text-emerald-800 border-emerald-300">
+                        APPROVED AS EVIDENCE
+                      </span>
+                    </div>
+
+                    <div className="text-xs text-ink-800 bg-cream-50 p-2.5 rounded-lg border border-cream-300/80">
+                      <span className="font-semibold text-ink-950">Approved Rationale: </span>
+                      {q.reply || "No reply text recorded."}
+                    </div>
+
+                    {q.manager_comment && (
+                      <p className="text-[11px] font-mono text-ink-600">
+                        Manager Sign-off: <span className="italic font-sans text-ink-800">{q.manager_comment}</span>
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="text-right text-[11px] font-mono text-ink-600 flex-shrink-0">
+                    <span className="block text-[10px] uppercase text-ink-500">Verified Evidence ID:</span>
+                    <span className="text-orange-brand font-semibold">{q.approved_source_id || 'src-doc-rehearsal'}</span>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         )}
 

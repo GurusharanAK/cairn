@@ -344,6 +344,8 @@ def review_rehearsal_reply(
             access_level=AccessLevel.RESTRICTED_TEAM,
             created_by_id=current_user.id,
             doc_metadata={
+                "status": "approved",
+                "quote": question.departing_reply,
                 "rehearsal_question_id": question.id,
                 "approved_by_id": current_user.id,
                 "approved_at": datetime.utcnow().isoformat()
@@ -358,12 +360,20 @@ def review_rehearsal_reply(
         question.manager_review_comment = payload.manager_comment
 
         # 2. Update KnowledgeGap to resolved
+        is_retry_q = "retry" in question.question.lower()
+        gap_filters = [
+            (KnowledgeGap.question_to_departing == question.question),
+            (KnowledgeGap.title.ilike(f"%{question.question[:30]}%"))
+        ]
+        if is_retry_q:
+            gap_filters.append(KnowledgeGap.title.ilike("%Retry%"))
+
+        from sqlalchemy import or_
         gaps = db.query(KnowledgeGap).filter(
             KnowledgeGap.project_id == question.project_id,
-            (KnowledgeGap.question_to_departing == question.question) |
-            (KnowledgeGap.title.ilike(f"%{question.question[:30]}%")) |
-            (KnowledgeGap.title.ilike("%Retry%"))
+            or_(*gap_filters)
         ).all()
+        decision_updated = False
         for gap in gaps:
             gap.status = GapStatus.APPROVED_AS_EVIDENCE
             gap.reviewer_id = current_user.id
@@ -377,8 +387,39 @@ def review_rehearsal_reply(
                     decision.reason = question.departing_reply
                     decision.status = DecisionStatus.EVIDENCE_SUPPORTED
                     decision.evidence_quote = f"Approved Rehearsal Answer: {question.departing_reply}"
+                    decision.source_id = verified_doc.id
+                    decision_updated = True
 
-        msg = "Reply approved by Manager. Converted into permanent verified SourceDocument evidence."
+        # Append to the knowledge model as a new verified Decision if not already updating an existing decision
+        if not decision_updated:
+            existing_dec = db.query(Decision).filter(
+                Decision.project_id == question.project_id,
+                (Decision.title == question.question) |
+                (Decision.title == f"Verified Query: {question.question}")
+            ).first()
+            if existing_dec:
+                existing_dec.reason = question.departing_reply
+                existing_dec.status = DecisionStatus.EVIDENCE_SUPPORTED
+                existing_dec.evidence_quote = f"Approved Rehearsal Answer: {question.departing_reply}"
+                existing_dec.source_id = verified_doc.id
+            else:
+                new_dec = Decision(
+                    id=f"dec-rehearsal-{question.id[:8]}",
+                    project_id=question.project_id,
+                    component_id=gaps[0].component_id if gaps else None,
+                    title=f"Verified Query: {question.question}",
+                    reason=question.departing_reply,
+                    status=DecisionStatus.EVIDENCE_SUPPORTED,
+                    source_id=verified_doc.id,
+                    evidence_quote=f"Approved Rehearsal Answer: {question.departing_reply}"
+                )
+                db.add(new_dec)
+                db.flush()
+                for gap in gaps:
+                    if not gap.decision_id:
+                        gap.decision_id = new_dec.id
+
+        msg = "Reply approved by Manager. Converted into permanent verified SourceDocument evidence and appended to Knowledge Model."
     else:
         question.status = RehearsalStatus.REJECTED
         question.manager_review_comment = payload.manager_comment or "Rejected by manager."
