@@ -14,13 +14,19 @@ def get_current_user(
         # Fallback to demo default manager if header omitted in MVP demo mode
         user = db.query(User).first()
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication credentials missing: X-User-ID header required."
-            )
+            from app.seeds.seed_demo_data import seed_synthetic_project
+            seed_synthetic_project(db)
+            user = db.query(User).filter(User.id == "usr-mgr-01").first()
         return user
 
     user = db.query(User).filter(User.id == x_user_id, User.is_active == True).first()
+    if not user:
+        # Auto-seed if database was unseeded/empty
+        if x_user_id in ["usr-mgr-01", "usr-dev-a", "usr-dev-b"]:
+            from app.seeds.seed_demo_data import seed_synthetic_project
+            seed_synthetic_project(db)
+            user = db.query(User).filter(User.id == x_user_id, User.is_active == True).first()
+
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

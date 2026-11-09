@@ -35,26 +35,36 @@ export interface HandoverPacketData {
 interface SuccessorReadinessViewProps {
   scenarios: ReadinessScenario[];
   handoverPacket: HandoverPacketData | null;
+  completedScenarios?: Record<string, boolean>;
+  onToggleScenario?: (scenarioId: string) => void;
   onCompleteScenario?: (scenarioId: string) => void;
 }
 
 export const SuccessorReadinessView: React.FC<SuccessorReadinessViewProps> = ({
   scenarios,
   handoverPacket,
+  completedScenarios: controlledCompleted,
+  onToggleScenario: controlledToggle,
   onCompleteScenario
 }) => {
-  const [completedScenarios, setCompletedScenarios] = useState<Record<string, boolean>>({});
+  const [internalCompleted, setInternalCompleted] = useState<Record<string, boolean>>({});
   const [activeTab, setActiveTab] = useState<'SCENARIOS' | 'PACKET'>('SCENARIOS');
 
+  const completedMap = controlledCompleted !== undefined ? controlledCompleted : internalCompleted;
+
   const toggleScenario = (id: string) => {
-    setCompletedScenarios(prev => ({
-      ...prev,
-      [id]: !prev[id]
-    }));
+    if (controlledToggle) {
+      controlledToggle(id);
+    } else {
+      setInternalCompleted(prev => ({
+        ...prev,
+        [id]: !prev[id]
+      }));
+    }
   };
 
-  const completedCount = Object.values(completedScenarios).filter(Boolean).length;
-  const readinessPct = scenarios.length > 0 ? Math.round((completedCount / scenarios.length) * 100) : 100;
+  const completedCount = Object.values(completedMap).filter(Boolean).length;
+  const readinessPct = scenarios.length > 0 ? Math.round((completedCount / scenarios.length) * 100) : 0;
 
   const downloadHandoverMarkdown = () => {
     if (!handoverPacket) return;
@@ -169,7 +179,7 @@ ${handoverPacket.open_attention_items.map(a => `- **[${a.type}] ${a.title}:** ${
       {activeTab === 'SCENARIOS' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {scenarios.map((scen) => {
-            const isDone = !!completedScenarios[scen.scenario_id];
+            const isDone = !!completedMap[scen.scenario_id];
             return (
               <div 
                 key={scen.scenario_id}
