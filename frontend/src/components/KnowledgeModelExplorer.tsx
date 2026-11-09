@@ -109,16 +109,24 @@ export const KnowledgeModelExplorer: React.FC<KnowledgeModelExplorerProps> = ({
         {/* TAB 1: DECISIONS */}
         {subTab === 'DECISIONS' && (
           <div className="space-y-3">
-            {decisions.map((dec) => {
+            {decisions.map((dec, idx) => {
               const hasReason = dec.status === 'evidence_supported';
+              const isLatest = idx === 0;
               return (
                 <div 
                   key={dec.id}
-                  className="bg-cream-100 border border-cream-300 p-4 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xs"
+                  className={`bg-cream-100 border p-4 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xs transition-all ${
+                    isLatest ? 'border-orange-brand/50 ring-1 ring-orange-brand/20 bg-cream-50' : 'border-cream-300'
+                  }`}
                 >
                   <div className="space-y-1.5 max-w-2xl">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="font-bold text-sm text-ink-950 font-sans">{dec.title}</span>
+                      {isLatest && (
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-orange-light text-orange-brand border border-orange-brand/30">
+                          LATEST
+                        </span>
+                      )}
                       <span className={`text-[10px] font-mono px-2 py-0.5 rounded border font-semibold ${
                         hasReason 
                           ? 'bg-emerald-100 text-emerald-800 border-emerald-200' 

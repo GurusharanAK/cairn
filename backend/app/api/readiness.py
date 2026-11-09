@@ -282,7 +282,7 @@ def get_knowledge_model(
     project = verify_project_access(project_id=id, current_user=current_user, db=db)
 
     components = db.query(Component).filter(Component.project_id == project.id).all()
-    decisions = db.query(Decision).filter(Decision.project_id == project.id).all()
+    decisions = db.query(Decision).filter(Decision.project_id == project.id).order_by(Decision.updated_at.desc(), Decision.created_at.desc()).all()
     dependencies = db.query(Dependency).filter(Dependency.project_id == project.id).all()
     failures = db.query(FailureRecord).filter(FailureRecord.project_id == project.id).all()
 

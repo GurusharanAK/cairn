@@ -284,6 +284,7 @@ def review_rehearsal_reply(
             matched_decision.status = DecisionStatus.EVIDENCE_SUPPORTED
             matched_decision.source_id = verified_doc.id
             matched_decision.evidence_quote = question.departing_reply
+            matched_decision.updated_at = datetime.utcnow()
         else:
             # Create brand new verified Decision record in the Knowledge Model
             comp = db.query(Component).filter(Component.project_id == question.project_id).first()
@@ -294,7 +295,9 @@ def review_rehearsal_reply(
                 reason=question.departing_reply,
                 status=DecisionStatus.EVIDENCE_SUPPORTED,
                 source_id=verified_doc.id,
-                evidence_quote=question.departing_reply
+                evidence_quote=question.departing_reply,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
             )
             db.add(new_dec)
 

@@ -396,26 +396,23 @@ export const CairnWorkspace: React.FC = () => {
       setKnowledgeModel(prev => {
         const found = prev.decisions.some(d => d.id === "dec-retry-limit" || d.id === "dec-2" || d.title.toLowerCase().includes("retry") || d.title === targetExchange?.question);
         if (found) {
+          const target = prev.decisions.find(d => d.id === "dec-retry-limit" || d.id === "dec-2" || d.title.toLowerCase().includes("retry") || d.title === targetExchange?.question)!;
+          const updatedItem = {
+            ...target,
+            status: "evidence_supported",
+            reason: replyQuote,
+            source_id: `src-doc-rehearsal-${Date.now()}`,
+            evidence_quote: replyQuote
+          };
+          const others = prev.decisions.filter(d => d.id !== target.id);
           return {
             ...prev,
-            decisions: prev.decisions.map(d => {
-              if (d.id === "dec-retry-limit" || d.id === "dec-2" || d.title.toLowerCase().includes("retry") || d.title === targetExchange?.question) {
-                return {
-                  ...d,
-                  status: "evidence_supported",
-                  reason: replyQuote,
-                  source_id: `src-doc-rehearsal-${Date.now()}`,
-                  evidence_quote: replyQuote
-                };
-              }
-              return d;
-            })
+            decisions: [updatedItem, ...others]
           };
         } else {
           return {
             ...prev,
             decisions: [
-              ...prev.decisions,
               {
                 id: `dec-${Date.now()}`,
                 title: targetExchange?.question || "Handover Approved Decision",
@@ -423,7 +420,8 @@ export const CairnWorkspace: React.FC = () => {
                 status: "evidence_supported",
                 source_id: `src-doc-rehearsal-${Date.now()}`,
                 evidence_quote: replyQuote
-              }
+              },
+              ...prev.decisions
             ]
           };
         }
