@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { API_BASE } from '../api/client';
+import { ingestDocument } from '../api/client';
 import { 
   FileUp, 
   CheckCircle2, 
@@ -61,26 +61,13 @@ export const IngestionModal: React.FC<IngestionModalProps> = ({
     setResult(null);
 
     try {
-      const res = await fetch(`${API_BASE}/api/projects/${projectId}/ingest`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-User-ID': 'usr-mgr-01'
-        },
-        body: JSON.stringify({
-          title: title.trim(),
-          source_type: sourceType,
-          content: content.trim(),
-          access_level: accessLevel
-        })
+      const data = await ingestDocument(projectId, {
+        title: title.trim(),
+        source_type: sourceType,
+        content: content.trim(),
+        access_level: accessLevel
       });
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.detail || 'Failed to ingest document');
-      }
-
-      const data = await res.json();
       setResult(data);
       onIngestSuccess();
     } catch (err: any) {
