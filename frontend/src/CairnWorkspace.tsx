@@ -337,28 +337,63 @@ export const CairnWorkspace: React.FC = () => {
     try {
       const uid = USER_IDS[currentRole];
       const res = await askRehearsalQuestion(PROJECT_ID, questionText, uid);
-      const newEx: RehearsalExchange = {
-        id: res.rehearsal_question_id,
-        project_id: PROJECT_ID,
-        requester_name: "Successor Member",
-        question: questionText,
-        status: res.status,
-        evidence_answer: res.evidence_answer,
-        cited_source_ids: res.cited_source_ids,
-        created_at: new Date().toISOString()
-      };
-      setExchanges(prev => (prev.some(item => item.id === newEx.id) ? prev : [newEx, ...prev]));
-      await loadLiveData();
+      setExchanges(prev => {
+        const existing = prev.find(item => item.id === res.rehearsal_question_id);
+        const updated: RehearsalExchange = existing
+          ? {
+              ...existing,
+              status: res.status,
+              evidence_answer: res.evidence_answer ?? existing.evidence_answer,
+              cited_source_ids: res.cited_source_ids?.length ? res.cited_source_ids : existing.cited_source_ids,
+            }
+          : {
+              id: res.rehearsal_question_id,
+              project_id: PROJECT_ID,
+              requester_name: "Successor Member",
+              question: questionText,
+              status: res.status,
+              evidence_answer: res.evidence_answer,
+              cited_source_ids: res.cited_source_ids,
+              created_at: new Date().toISOString()
+            };
+        return [updated, ...prev.filter(item => item.id !== res.rehearsal_question_id)];
+      });
+      await loadLiveData(false, PROJECT_ID);
     } catch (err) {
-      if (questionText.toLowerCase().includes("postgres")) {
+      // Offline Local Fallback: search local Knowledge Model state deterministically
+      const normQ = questionText.trim().toLowerCase();
+      const stopwords = new Set(['why', 'what', 'when', 'where', 'how', 'does', 'did', 'the', 'and', 'for', 'with', 'from', 'set', 'use']);
+      const terms = (normQ.match(/[a-z0-9_]+/g) || []).filter(t => !stopwords.has(t) && t.length >= 2);
+
+      const approvedMatch = (knowledgeModel.approved_queries || []).find(
+        (aq: any) => aq.question.trim().toLowerCase() === normQ || terms.some(t => aq.question.toLowerCase().includes(t))
+      );
+      const decisionMatch = !approvedMatch
+        ? (knowledgeModel.decisions || []).find(
+            (d: any) => d.status === 'evidence_supported' && terms.some(t => `${d.title} ${d.reason || ''}`.toLowerCase().includes(t))
+          )
+        : null;
+
+      if (approvedMatch) {
         setExchanges(prev => [{
           id: `ex-${Date.now()}`,
           project_id: PROJECT_ID,
           requester_name: "Successor Member",
           question: questionText,
           status: "ANSWERED_FROM_EVIDENCE",
-          evidence_answer: "Verified Record: Use PostgreSQL for Financial Ledger. Reason: Relational transactions and strict ACID compliance needed for ledger auditing.",
-          cited_source_ids: ["src-doc-arch-01"],
+          evidence_answer: `Verified Record (Approved Knowledge Model): ${approvedMatch.reply}`,
+          cited_source_ids: approvedMatch.approved_source_id ? [approvedMatch.approved_source_id] : [],
+          created_at: new Date().toISOString()
+        }, ...prev]);
+      } else if (decisionMatch) {
+        setExchanges(prev => [{
+          id: `ex-${Date.now()}`,
+          project_id: PROJECT_ID,
+          requester_name: "Successor Member",
+          question: questionText,
+          status: "ANSWERED_FROM_EVIDENCE",
+          evidence_answer: `Verified Record: ${decisionMatch.title}. Reason: ${decisionMatch.reason}`,
+          cited_source_ids: [decisionMatch.source_id],
           created_at: new Date().toISOString()
         }, ...prev]);
       } else {

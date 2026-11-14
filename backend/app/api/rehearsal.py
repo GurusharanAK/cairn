@@ -1,3 +1,4 @@
+import re
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -19,8 +20,11 @@ from app.models.models import (
     SourceDocument,
     SourceType,
     AccessLevel,
+    Component,
     Decision,
     DecisionStatus,
+    Dependency,
+    FailureRecord,
     KnowledgeGap,
     GapType,
     GapStatus,
@@ -82,6 +86,48 @@ class RehearsalReviewResponse(BaseModel):
 # ENDPOINTS
 # ==========================================
 
+_STOPWORDS = {
+    "why", "what", "when", "where", "who", "how", "does", "did", "do",
+    "is", "are", "was", "were", "the", "and", "for", "with", "from",
+    "this", "that", "its", "our", "you", "your", "can", "could",
+    "should", "would", "set", "use", "used", "using", "into", "over",
+    "explain", "tell", "about", "there", "their", "them", "been", "have",
+}
+
+
+def _norm_question(text: str) -> str:
+    return " ".join(text.strip().lower().split())
+
+
+def _extract_query_terms(text: str) -> List[str]:
+    tokens = re.findall(r"[a-z0-9_]+", text.lower())
+    seen = set()
+    terms: List[str] = []
+    for tok in tokens:
+        if tok in _STOPWORDS:
+            continue
+        if len(tok) >= 2 or tok.isdigit():
+            if tok not in seen:
+                seen.add(tok)
+                terms.append(tok)
+    return terms
+
+
+def _score_text_match(terms: List[str], target_text: str) -> int:
+    if not terms or not target_text:
+        return 0
+    lowered = target_text.lower()
+    score = 0
+    for term in terms:
+        if len(term) <= 4 or term.isdigit():
+            if re.search(rf"\b{re.escape(term)}\b", lowered):
+                score += 1
+        else:
+            if term in lowered:
+                score += 1
+    return score
+
+
 @router.post(
     "/ask",
     response_model=RehearsalAskResponse,
@@ -97,9 +143,10 @@ def ask_rehearsal_question(
     Step 6: Handover Rehearsal Q&A.
     INVARIANTS:
     - Filters approved evidence at database query level based on user role/permissions.
-    - If approved evidence exists, replies with citations.
-    - If evidence is absent, Cairn refuses to hallucinate/guess. It records a gap and
-      routes the question to the departing member.
+    - Checks verified Knowledge Model (approved rehearsal Q&As, evidence-supported decisions,
+      components, dependencies, failure runbooks, and cleared source documents) deterministically.
+    - If evidence is absent or rationale is explicitly unrecorded, Cairn refuses to guess
+      and deduplicates/routes the question to the departing member.
     """
     project = verify_project_access(project_id=payload.project_id, current_user=current_user, db=db)
 
@@ -111,11 +158,194 @@ def ask_rehearsal_question(
     ).all()
     allowed_source_ids = {s.id for s in allowed_sources}
 
-    # 1b. Deduplicate open/pending questions on the same project
-    def _norm_q(text: str) -> str:
-        return " ".join(text.strip().lower().split())
+    normalized_input_q = _norm_question(payload.question)
+    query_terms = _extract_query_terms(payload.question)
+    min_match_score = 2 if len(query_terms) >= 3 else 1
+    fallback_min_score = 1 if len(query_terms) <= 2 else max(2, (len(query_terms) + 1) // 2)
 
-    normalized_input_q = _norm_q(payload.question)
+    # 2. Priority 1: Check cleared Knowledge Model (Approved Queries & Evidence-Supported Decisions)
+    verified_answer: Optional[str] = None
+    verified_cites: List[str] = []
+    verified_decision_id: Optional[str] = None
+    best_verified_score = 0
+
+    # 2a. Previously approved / answered RehearsalQuestions whose cited/minted source is cleared
+    prior_verified_qs = (
+        db.query(RehearsalQuestion)
+        .filter(
+            RehearsalQuestion.project_id == project.id,
+            RehearsalQuestion.status.in_([
+                RehearsalStatus.APPROVED_AS_EVIDENCE,
+                RehearsalStatus.ANSWERED_FROM_EVIDENCE,
+            ]),
+        )
+        .order_by(RehearsalQuestion.updated_at.desc())
+        .all()
+    )
+    for pq in prior_verified_qs:
+        pq_cites: List[str] = []
+        if pq.approved_source_document_id and pq.approved_source_document_id in allowed_source_ids:
+            pq_cites.append(pq.approved_source_document_id)
+        if pq.cited_source_ids:
+            pq_cites.extend(sid for sid in pq.cited_source_ids if sid in allowed_source_ids)
+        if not pq_cites:
+            continue
+
+        answer_text = (
+            f"Verified Record (Approved Knowledge Model): {pq.departing_reply}"
+            if pq.status == RehearsalStatus.APPROVED_AS_EVIDENCE and pq.departing_reply
+            else (pq.evidence_answer or "")
+        )
+        if not answer_text:
+            continue
+
+        if _norm_question(pq.question) == normalized_input_q:
+            verified_answer = answer_text
+            verified_cites = list(dict.fromkeys(pq_cites))
+            verified_decision_id = pq.decision_id
+            best_verified_score = len(query_terms) + 100
+            break
+
+        score = _score_text_match(query_terms, f"{pq.question} {pq.departing_reply or ''}")
+        if score >= min_match_score and score > best_verified_score:
+            best_verified_score = score
+            verified_answer = answer_text
+            verified_cites = list(dict.fromkeys(pq_cites))
+            verified_decision_id = pq.decision_id
+
+    # 2b. Cleared Evidence-Supported Decisions (including approved rehearsal decisions)
+    matched_decisions = db.query(Decision).filter(
+        Decision.project_id == project.id,
+        Decision.source_id.in_(allowed_source_ids),
+        Decision.status == DecisionStatus.EVIDENCE_SUPPORTED
+    ).all()
+    for d in matched_decisions:
+        d_text = f"{d.title} {d.reason or ''} {d.evidence_quote or ''}"
+        score = _score_text_match(query_terms, d_text)
+        if score >= min_match_score and score > best_verified_score:
+            best_verified_score = score
+            verified_answer = f"Verified Record: {d.title}. Reason: {d.reason} (Excerpt: '{d.evidence_quote or 'N/A'}')"
+            verified_cites = [d.source_id]
+            verified_decision_id = d.id
+
+    # 3. Check cleared REASON_MISSING / UNVERIFIED Decisions (Zero-Hallucination Guard)
+    direct_gap = None
+    if payload.knowledge_gap_id:
+        direct_gap = db.query(KnowledgeGap).filter(
+            KnowledgeGap.id == payload.knowledge_gap_id,
+            KnowledgeGap.project_id == project.id
+        ).first()
+
+    missing_reason_decisions = db.query(Decision).filter(
+        Decision.project_id == project.id,
+        Decision.source_id.in_(allowed_source_ids),
+        Decision.status.in_([DecisionStatus.REASON_MISSING, DecisionStatus.UNVERIFIED])
+    ).all()
+
+    matched_missing_decision = None
+    best_missing_score = 0
+    if payload.decision_id:
+        matched_missing_decision = next((d for d in missing_reason_decisions if d.id == payload.decision_id), None)
+        if matched_missing_decision:
+            best_missing_score = 100
+    if not matched_missing_decision and direct_gap and direct_gap.decision_id:
+        matched_missing_decision = next((d for d in missing_reason_decisions if d.id == direct_gap.decision_id), None)
+        if matched_missing_decision:
+            best_missing_score = 100
+    if not matched_missing_decision:
+        for d in missing_reason_decisions:
+            m_score = _score_text_match(query_terms, d.title)
+            if m_score >= min_match_score and m_score > best_missing_score:
+                best_missing_score = m_score
+                matched_missing_decision = d
+
+    # Only fall back to Components / Failures / Dependencies / Docs if NO stronger missing-reason decision claimed this query
+    if not verified_answer and not matched_missing_decision:
+        # Failures
+        failures = db.query(FailureRecord).filter(
+            FailureRecord.project_id == project.id,
+            FailureRecord.source_id.in_(allowed_source_ids),
+        ).all()
+        for f in failures:
+            f_text = f"{f.title} {f.error_message} {f.attempted_fix} {f.resolution or ''}"
+            score = _score_text_match(query_terms, f_text)
+            if score >= fallback_min_score and score > best_verified_score:
+                best_verified_score = score
+                verified_answer = f"Verified Failure Runbook: {f.title}. Error: {f.error_message} Fix: {f.attempted_fix}"
+                verified_cites = [f.source_id]
+
+        # Dependencies
+        components = db.query(Component).filter(
+            Component.project_id == project.id,
+            Component.source_id.in_(allowed_source_ids),
+        ).all()
+        comp_name_map = {c.id: c.name for c in components}
+        dependencies = db.query(Dependency).filter(
+            Dependency.project_id == project.id,
+            Dependency.source_id.in_(allowed_source_ids),
+        ).all()
+        for dep in dependencies:
+            src_name = comp_name_map.get(dep.source_component_id, "Unknown")
+            tgt_name = comp_name_map.get(dep.target_component_id, "Unknown")
+            dep_text = f"{src_name} {tgt_name} {dep.dependency_type.value} {dep.description or ''}"
+            score = _score_text_match(query_terms, dep_text)
+            if score >= fallback_min_score and score > best_verified_score:
+                best_verified_score = score
+                verified_answer = (
+                    f"Verified Dependency ({src_name} -> {tgt_name}, {dep.dependency_type.value}): "
+                    f"{dep.description or 'Explicitly documented architecture dependency.'}"
+                )
+                verified_cites = [dep.source_id]
+
+        # Components
+        for c in components:
+            score = _score_text_match(query_terms, f"{c.name} {c.description or ''}")
+            if score >= fallback_min_score and score > best_verified_score:
+                best_verified_score = score
+                verified_answer = f"Verified Component ({c.name}): {c.description or c.status.value}"
+                verified_cites = [c.source_id]
+
+        # Cleared SourceDocument lines (skipping commit metadata header lines like Author: / Date:)
+        if not verified_answer:
+            missing_source_ids = {d.source_id for d in missing_reason_decisions}
+            for s in allowed_sources:
+                if s.id in missing_source_ids:
+                    continue
+                for line in s.content.splitlines():
+                    stripped = line.strip()
+                    if not stripped or stripped.lower().startswith(("author:", "date:", "commit ")):
+                        continue
+                    score = _score_text_match(query_terms, f"{s.title} {stripped}")
+                    if score >= fallback_min_score and score > best_verified_score:
+                        best_verified_score = score
+                        verified_answer = f"Verified Source: {s.title} states: '{stripped}'"
+                        verified_cites = [s.id]
+
+    # 4. If verified Knowledge Model evidence exists (and is not superseded by an unrecorded rationale match), auto-fill immediately!
+    if verified_answer and (best_verified_score >= best_missing_score or best_verified_score >= 100):
+        question_rec = RehearsalQuestion(
+            project_id=project.id,
+            requester_id=current_user.id,
+            question=payload.question,
+            decision_id=verified_decision_id or payload.decision_id,
+            status=RehearsalStatus.ANSWERED_FROM_EVIDENCE,
+            evidence_answer=verified_answer,
+            cited_source_ids=list(dict.fromkeys(verified_cites))
+        )
+        db.add(question_rec)
+        db.commit()
+        db.refresh(question_rec)
+
+        return RehearsalAskResponse(
+            rehearsal_question_id=question_rec.id,
+            status=RehearsalStatus.ANSWERED_FROM_EVIDENCE,
+            found_in_evidence=True,
+            evidence_answer=verified_answer,
+            cited_source_ids=question_rec.cited_source_ids,
+            message="Evidence verified. Answer auto-filled directly from approved Knowledge Model records."
+        )
+
+    # 5. Deduplicate open/pending questions only when no verified Knowledge Model answer exists yet
     open_statuses = [RehearsalStatus.PENDING_DEPARTING_REPLY, RehearsalStatus.PENDING_REVIEW]
     existing_open_questions = (
         db.query(RehearsalQuestion)
@@ -127,7 +357,7 @@ def ask_rehearsal_question(
         .all()
     )
     for existing_q in existing_open_questions:
-        same_text = _norm_q(existing_q.question) == normalized_input_q
+        same_text = _norm_question(existing_q.question) == normalized_input_q
         same_gap = bool(payload.knowledge_gap_id and existing_q.knowledge_gap_id == payload.knowledge_gap_id)
         same_dec = bool(payload.decision_id and existing_q.decision_id == payload.decision_id)
         if same_text or same_gap or same_dec:
@@ -137,39 +367,10 @@ def ask_rehearsal_question(
                 found_in_evidence=False,
                 evidence_answer=None,
                 cited_source_ids=[],
-                message="Existing open rehearsal question already queued for this topic; linked existing thread instead of duplicating."
+                message="Question is already queued and awaiting departing reply / Manager approval before entering the Knowledge Model."
             )
 
-    # 2. Search verified Decisions and Source content (respecting RBAC clearance)
-    query_terms = [w.lower() for w in payload.question.replace("?", "").replace(",", "").split() if len(w) > 3]
-
-    # Resolve directly linked gap or decision if IDs were provided
-    direct_gap = None
-    if payload.knowledge_gap_id:
-        direct_gap = db.query(KnowledgeGap).filter(
-            KnowledgeGap.id == payload.knowledge_gap_id,
-            KnowledgeGap.project_id == project.id
-        ).first()
-
-    # Check if this query targets a cleared decision whose reason is known to be MISSING
-    missing_reason_decisions = db.query(Decision).filter(
-        Decision.project_id == project.id,
-        Decision.source_id.in_(allowed_source_ids),
-        Decision.status == DecisionStatus.REASON_MISSING
-    ).all()
-
-    matched_missing_decision = None
-    if payload.decision_id:
-        matched_missing_decision = next((d for d in missing_reason_decisions if d.id == payload.decision_id), None)
-    if not matched_missing_decision and direct_gap and direct_gap.decision_id:
-        matched_missing_decision = next((d for d in missing_reason_decisions if d.id == direct_gap.decision_id), None)
-    if not matched_missing_decision:
-        for d in missing_reason_decisions:
-            d_text = d.title.lower()
-            if any(term in d_text for term in query_terms):
-                matched_missing_decision = d
-                break
-
+    # 6. Zero-Hallucination Fork: Handle known REASON_MISSING decisions or create a new gap
     if matched_missing_decision:
         existing_gap = direct_gap or db.query(KnowledgeGap).filter(
             KnowledgeGap.decision_id == matched_missing_decision.id
@@ -214,103 +415,46 @@ def ask_rehearsal_question(
             message=f"Zero-Hallucination Guard: Decision '{matched_missing_decision.title}' is documented, but its reasoning is explicitly unrecorded. Question queued for departing member."
         )
 
-    matched_decisions = db.query(Decision).filter(
-        Decision.project_id == project.id,
-        Decision.source_id.in_(allowed_source_ids),
-        Decision.status == DecisionStatus.EVIDENCE_SUPPORTED
-    ).all()
-
-    evidence_found = None
-    cited_ids = []
-
-    for d in matched_decisions:
-        # Match decision title or reason
-        d_text = f"{d.title} {d.reason or ''}".lower()
-        if any(term in d_text for term in query_terms):
-            evidence_found = f"Verified Record: {d.title}. Reason: {d.reason} (Excerpt: '{d.evidence_quote or 'N/A'}')"
-            cited_ids.append(d.source_id)
-            break
-
-    # If no decision matched, check direct document contents
-    if not evidence_found:
-        for s in allowed_sources:
-            s_content_lower = s.content.lower()
-            if any(term in s_content_lower for term in query_terms):
-                # Search for contextual snippets
-                for line in s.content.splitlines():
-                    if any(term in line.lower() for term in query_terms):
-                        evidence_found = f"Verified Source: {s.title} states: '{line.strip()}'"
-                        cited_ids.append(s.id)
-                        break
-            if evidence_found:
-                break
-
-    # 3. Handle Zero-Hallucination Fork
-    if evidence_found:
-        # Answer directly from verified ground-truth
-        question_rec = RehearsalQuestion(
+    # INVARIANT 1 & 2: NO GUESSING for completely undocumented topics.
+    gap = direct_gap
+    if not gap:
+        gap = KnowledgeGap(
             project_id=project.id,
-            requester_id=current_user.id,
-            question=payload.question,
-            status=RehearsalStatus.ANSWERED_FROM_EVIDENCE,
-            evidence_answer=evidence_found,
-            cited_source_ids=list(set(cited_ids))
+            decision_id=payload.decision_id,
+            title=f"Rehearsal Question: {payload.question[:80]}",
+            description=f"Successor asked: '{payload.question}'. No approved evidence found.",
+            gap_type=GapType.TACIT_KNOWLEDGE,
+            status=GapStatus.QUESTION_QUEUED,
+            question_to_departing=payload.question
         )
-        db.add(question_rec)
-        db.commit()
-        db.refresh(question_rec)
-
-        return RehearsalAskResponse(
-            rehearsal_question_id=question_rec.id,
-            status=RehearsalStatus.ANSWERED_FROM_EVIDENCE,
-            found_in_evidence=True,
-            evidence_answer=evidence_found,
-            cited_source_ids=question_rec.cited_source_ids,
-            message="Evidence verified. Answer extracted directly from approved project documents."
-        )
-
+        db.add(gap)
+        db.flush()
     else:
-        # INVARIANT 1 & 2: NO GUESSING.
-        # Link directly to gap/decision if provided or matched, otherwise create KnowledgeGap
-        gap = direct_gap
-        if not gap:
-            gap = KnowledgeGap(
-                project_id=project.id,
-                decision_id=payload.decision_id,
-                title=f"Rehearsal Question: {payload.question[:80]}",
-                description=f"Successor asked: '{payload.question}'. No approved evidence found.",
-                gap_type=GapType.TACIT_KNOWLEDGE,
-                status=GapStatus.QUESTION_QUEUED,
-                question_to_departing=payload.question
-            )
-            db.add(gap)
-            db.flush()
-        else:
-            gap.question_to_departing = payload.question
-            gap.status = GapStatus.QUESTION_QUEUED
-            db.flush()
+        gap.question_to_departing = payload.question
+        gap.status = GapStatus.QUESTION_QUEUED
+        db.flush()
 
-        question_rec = RehearsalQuestion(
-            project_id=project.id,
-            requester_id=current_user.id,
-            question=payload.question,
-            knowledge_gap_id=gap.id,
-            decision_id=payload.decision_id or gap.decision_id,
-            status=RehearsalStatus.PENDING_DEPARTING_REPLY,
-            evidence_answer="Unverified: No approved evidence found in project records."
-        )
-        db.add(question_rec)
-        db.commit()
-        db.refresh(question_rec)
+    question_rec = RehearsalQuestion(
+        project_id=project.id,
+        requester_id=current_user.id,
+        question=payload.question,
+        knowledge_gap_id=gap.id,
+        decision_id=payload.decision_id or gap.decision_id,
+        status=RehearsalStatus.PENDING_DEPARTING_REPLY,
+        evidence_answer="Unverified: No approved evidence found in project records."
+    )
+    db.add(question_rec)
+    db.commit()
+    db.refresh(question_rec)
 
-        return RehearsalAskResponse(
-            rehearsal_question_id=question_rec.id,
-            status=RehearsalStatus.PENDING_DEPARTING_REPLY,
-            found_in_evidence=False,
-            evidence_answer=None,
-            cited_source_ids=[],
-            message="No approved source explains this. Question queued for departing member. Cairn will not guess."
-        )
+    return RehearsalAskResponse(
+        rehearsal_question_id=question_rec.id,
+        status=RehearsalStatus.PENDING_DEPARTING_REPLY,
+        found_in_evidence=False,
+        evidence_answer=None,
+        cited_source_ids=[],
+        message="No approved source explains this. Question queued for departing member. Cairn will not guess."
+    )
 
 
 @router.post(

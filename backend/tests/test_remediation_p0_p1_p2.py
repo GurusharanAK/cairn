@@ -611,3 +611,68 @@ def test_seeded_multihop_mesh_and_project_1_benchmark_preserved(client_and_db):
         "Executive Reporting Portal",
     ]
 
+
+def test_asking_same_approved_question_autofills_from_knowledge_model(isolated_db):
+    db = isolated_db
+    successor = db.query(User).filter(User.id == "usr-dev-b").first()
+    departing = db.query(User).filter(User.id == "usr-dev-a").first()
+    manager = db.query(User).filter(User.id == "usr-mgr-01").first()
+
+    # 1. Ask an ad-hoc question -> pending -> reply -> manager approves into Knowledge Model
+    q_text = "How does Analytics Dashboard authenticate with the Auth API?"
+    ask_1 = ask_rehearsal_question(
+        RehearsalAskRequest(project_id="proj-cairn-mvp", question=q_text),
+        db=db,
+        current_user=successor,
+    )
+    # Seeded Dependency matches Analytics Dashboard -> Authentication Service cleanly or escalates;
+    # test exact round-trip for a genuinely new question:
+    novel_q = "Why is the webhook batch window set to 60 seconds?"
+    ask_novel = ask_rehearsal_question(
+        RehearsalAskRequest(project_id="proj-cairn-mvp", question=novel_q),
+        db=db,
+        current_user=successor,
+    )
+    assert ask_novel.status == RehearsalStatus.PENDING_DEPARTING_REPLY
+
+    reply_to_rehearsal_question(
+        RehearsalReplyRequest(
+            question_id=ask_novel.rehearsal_question_id,
+            reply_text="Sixty seconds allows idempotent batching without exhausting gateway rate quotas.",
+        ),
+        db=db,
+        current_user=departing,
+    )
+    rev = review_rehearsal_reply(
+        RehearsalReviewRequest(
+            question_id=ask_novel.rehearsal_question_id,
+            approved=True,
+            manager_comment="Confirmed with SRE runbook.",
+        ),
+        db=db,
+        current_user=manager,
+    )
+    assert rev.status == RehearsalStatus.APPROVED_AS_EVIDENCE
+
+    # 2. Ask the exact same question again -> MUST auto-fill from approved Knowledge Model even though dec-retry-limit has 'set'/'3'
+    re_ask = ask_rehearsal_question(
+        RehearsalAskRequest(project_id="proj-cairn-mvp", question=novel_q),
+        db=db,
+        current_user=successor,
+    )
+    assert re_ask.found_in_evidence is True
+    assert re_ask.status == RehearsalStatus.ANSWERED_FROM_EVIDENCE
+    assert "idempotent batching" in re_ask.evidence_answer.lower()
+    assert rev.new_verified_source_id in re_ask.cited_source_ids
+
+    # 3. Also verify short-term query ('Why JWT?') finds Authentication Service Component
+    jwt_ask = ask_rehearsal_question(
+        RehearsalAskRequest(project_id="proj-cairn-mvp", question="Why JWT?"),
+        db=db,
+        current_user=successor,
+    )
+    assert jwt_ask.found_in_evidence is True
+    assert jwt_ask.status == RehearsalStatus.ANSWERED_FROM_EVIDENCE
+    assert "authentication service" in jwt_ask.evidence_answer.lower()
+
+
