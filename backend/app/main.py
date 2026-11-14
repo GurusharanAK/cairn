@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.db.database import init_db
+from app.api.auth import router as auth_router
 from app.api.ingest import router as ingest_router
 from app.api.stress_test import router as stress_test_router
 from app.api.rehearsal import router as rehearsal_router
@@ -24,6 +25,7 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(auth_router)
 app.include_router(ingest_router)
 app.include_router(stress_test_router)
 app.include_router(rehearsal_router)

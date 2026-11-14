@@ -2,22 +2,25 @@ import React, { useState, useEffect } from 'react';
 import { CairnLogo } from './components/CairnLogo';
 import { ContinuityScoreWidget, ScoreBreakdown } from './components/ContinuityScoreWidget';
 import { ContinuityStressTestView, StressTestReport } from './components/ContinuityStressTestView';
-import { HandoverRehearsalChat, RehearsalExchange, UserRole } from './components/HandoverRehearsalChat';
+import { HandoverRehearsalChat, RehearsalExchange, UserRole, AuditTrailEntry } from './components/HandoverRehearsalChat';
 import { SuccessorReadinessView, ReadinessScenario, HandoverPacketData } from './components/SuccessorReadinessView';
 import { IngestionModal } from './components/IngestionModal';
 import { KnowledgeModelExplorer } from './components/KnowledgeModelExplorer';
 import { DepartingMemberWorkspace } from './components/DepartingMemberWorkspace';
-import { 
-  fetchProjectScore, 
-  fetchStressTest, 
-  fetchRehearsalQuestions, 
-  askRehearsalQuestion, 
-  replyRehearsalQuestion, 
+import {
+  fetchProjectScore,
+  fetchStressTest,
+  simulateMultihopStressTest,
+  fetchRehearsalQuestions,
+  fetchAuditHistory,
+  askRehearsalQuestion,
+  replyRehearsalQuestion,
   reviewRehearsalQuestion,
   fetchReadinessScenarios,
   fetchHandoverPacket,
   fetchKnowledgeModel,
-  resetDemoData
+  resetDemoData,
+  loginAsUser
 } from './api/client';
 import { 
   Compass, 
@@ -203,7 +206,11 @@ export const CairnWorkspace: React.FC = () => {
   const [scenarios, setScenarios] = useState<ReadinessScenario[]>([]);
   const [handoverPacket, setHandoverPacket] = useState<HandoverPacketData | null>(null);
   const [knowledgeModel, setKnowledgeModel] = useState(FALLBACK_KNOWLEDGE_MODEL);
+  const [auditHistory, setAuditHistory] = useState<AuditTrailEntry[]>([]);
+  const [isMultihopPreview, setIsMultihopPreview] = useState(false);
+  const [liveStressBackup, setLiveStressBackup] = useState<StressTestReport | null>(null);
   const [isLiveConnected, setIsLiveConnected] = useState(false);
+  const [isWakingBackend, setIsWakingBackend] = useState(false);
   const [quickQuestionInput, setQuickQuestionInput] = useState('');
 
   const PROJECT_ID = "proj-cairn-mvp";
@@ -213,24 +220,40 @@ export const CairnWorkspace: React.FC = () => {
     INCOMING_MEMBER: "usr-dev-b"
   };
 
-  const loadLiveData = async () => {
+  const loadLiveData = async (withColdStartRetry: boolean = false) => {
+    const retryOpts = withColdStartRetry
+      ? {
+          retries: 3,
+          baseDelayMs: 600,
+          onWaking: (waking: boolean) => setIsWakingBackend(waking)
+        }
+      : undefined;
+
     try {
       const uid = USER_IDS[currentRole];
-      const [scoreRes, stressRes, questionsRes, scenRes, packetRes, kmRes] = await Promise.allSettled([
-        fetchProjectScore(PROJECT_ID, uid),
-        fetchStressTest(PROJECT_ID, uid),
-        fetchRehearsalQuestions(PROJECT_ID, uid),
-        fetchReadinessScenarios(PROJECT_ID, uid),
-        fetchHandoverPacket(PROJECT_ID, uid),
-        fetchKnowledgeModel(PROJECT_ID, uid)
+      await loginAsUser(uid, { retry: retryOpts });
+      const [scoreRes, stressRes, questionsRes, scenRes, packetRes, kmRes, auditRes] = await Promise.allSettled([
+        fetchProjectScore(PROJECT_ID, uid, retryOpts),
+        fetchStressTest(PROJECT_ID, uid, retryOpts),
+        fetchRehearsalQuestions(PROJECT_ID, uid, retryOpts),
+        fetchReadinessScenarios(PROJECT_ID, uid, retryOpts),
+        fetchHandoverPacket(PROJECT_ID, uid, retryOpts),
+        fetchKnowledgeModel(PROJECT_ID, uid, retryOpts),
+        fetchAuditHistory(PROJECT_ID, uid, retryOpts)
       ]);
 
       if (scoreRes.status === 'fulfilled') {
         setScoreData(scoreRes.value);
         setIsLiveConnected(true);
+      } else {
+        setIsLiveConnected(false);
       }
-      if (stressRes.status === 'fulfilled') setStressReport(stressRes.value);
-      if (questionsRes.status === 'fulfilled' && questionsRes.value.length > 0) {
+      if (stressRes.status === 'fulfilled') {
+        setStressReport(stressRes.value);
+        setLiveStressBackup(stressRes.value);
+        setIsMultihopPreview(false);
+      }
+      if (questionsRes.status === 'fulfilled') {
         setExchanges(questionsRes.value.map((q: any) => ({
           id: q.id,
           project_id: q.project_id,
@@ -249,19 +272,25 @@ export const CairnWorkspace: React.FC = () => {
       if (packetRes.status === 'fulfilled') setHandoverPacket(packetRes.value);
       if (kmRes.status === 'fulfilled' && kmRes.value) {
         setKnowledgeModel(kmRes.value);
+        if (Array.isArray(kmRes.value.audit_history)) {
+          setAuditHistory(kmRes.value.audit_history);
+        }
+      }
+      if (auditRes.status === 'fulfilled' && Array.isArray(auditRes.value)) {
+        setAuditHistory(auditRes.value);
       }
     } catch (e) {
       console.warn("Backend sync", e);
       setIsLiveConnected(false);
+    } finally {
+      setIsWakingBackend(false);
     }
   };
 
-  // Reset data on initial page load / reload so user-entered data is cleared and only example data remains
-  const isFirstMount = React.useRef(true);
-
+  // Explicit user-triggered demo reset ONLY (never auto-triggered on page reload)
   const resetAllToExampleData = async () => {
     try {
-      await resetDemoData();
+      await resetDemoData(USER_IDS[currentRole]);
     } catch (err) {
       console.warn("Could not reset demo data:", err);
     }
@@ -269,20 +298,18 @@ export const CairnWorkspace: React.FC = () => {
     setStressReport(FALLBACK_STRESS);
     setExchanges(FALLBACK_EXCHANGES);
     setKnowledgeModel(FALLBACK_KNOWLEDGE_MODEL);
+    setAuditHistory([]);
+    setIsMultihopPreview(false);
     setQuickQuestionInput('');
     await loadLiveData();
   };
 
+  // Initial mount & role switches fetch live GET endpoints (with cold-start retry on first load)
+  const isFirstMount = React.useRef(true);
   useEffect(() => {
-    resetAllToExampleData();
-  }, []);
-
-  useEffect(() => {
-    if (isFirstMount.current) {
-      isFirstMount.current = false;
-      return;
-    }
-    loadLiveData();
+    const initial = isFirstMount.current;
+    isFirstMount.current = false;
+    loadLiveData(initial);
   }, [currentRole]);
 
   // Handle Asking Question
@@ -300,7 +327,8 @@ export const CairnWorkspace: React.FC = () => {
         cited_source_ids: res.cited_source_ids,
         created_at: new Date().toISOString()
       };
-      setExchanges(prev => [newEx, ...prev]);
+      setExchanges(prev => (prev.some(item => item.id === newEx.id) ? prev : [newEx, ...prev]));
+      await loadLiveData();
     } catch (err) {
       if (questionText.toLowerCase().includes("postgres")) {
         setExchanges(prev => [{
@@ -617,8 +645,20 @@ export const CairnWorkspace: React.FC = () => {
 
           <div className="flex items-center justify-between text-[11px] font-mono text-cream-400 pt-1">
             <span className="flex items-center gap-1.5">
-              <span className={`w-2 h-2 rounded-full ${isLiveConnected ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-              {isLiveConnected ? 'API Live' : 'Local Fallback'}
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  isWakingBackend
+                    ? 'bg-orange-brand animate-pulse'
+                    : isLiveConnected
+                    ? 'bg-emerald-400'
+                    : 'bg-amber-400'
+                }`}
+              />
+              {isWakingBackend
+                ? 'Waking Backend...'
+                : isLiveConnected
+                ? 'API Live (Signed)'
+                : 'Local Fallback'}
             </span>
             <span>v1.0.0</span>
           </div>
@@ -654,12 +694,12 @@ export const CairnWorkspace: React.FC = () => {
               {scoreData.overall_score} / 100
             </span>
 
-            <button 
-              onClick={loadLiveData}
+            <button
+              onClick={() => loadLiveData(false)}
               className="text-ink-600 hover:text-ink-950 p-1.5 rounded-lg hover:bg-cream-200 transition-colors border border-cream-300"
               title="Refresh live metrics from backend"
             >
-              <RefreshCw className="w-3.5 h-3.5" />
+              <RefreshCw className={`w-3.5 h-3.5 ${isWakingBackend ? 'animate-spin text-orange-brand' : ''}`} />
             </button>
 
             <button 
@@ -1012,9 +1052,31 @@ export const CairnWorkspace: React.FC = () => {
             </>
           )}
 
+          {isWakingBackend && (
+            <div className="mb-4 px-4 py-2.5 rounded-xl bg-amber-100 border border-amber-300 text-amber-950 text-xs font-mono flex items-center gap-2 shadow-warm-sm">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin text-orange-brand" />
+              <span>Waking Cairn API backend (retrying cold-start with backoff)...</span>
+            </div>
+          )}
+
           {activeView === 'STRESS_TEST' && (
             <ContinuityStressTestView
               report={stressReport}
+              isMultihopPreview={isMultihopPreview}
+              onSimulateMultihop={async () => {
+                try {
+                  const uid = USER_IDS[currentRole];
+                  const multiReport = await simulateMultihopStressTest(PROJECT_ID, uid);
+                  setStressReport(multiReport);
+                  setIsMultihopPreview(true);
+                } catch (e) {
+                  console.warn("Multi-hop simulation error:", e);
+                }
+              }}
+              onResetLiveReport={() => {
+                if (liveStressBackup) setStressReport(liveStressBackup);
+                setIsMultihopPreview(false);
+              }}
               onInitiateRehearsalForComponent={(compName) => {
                 setActiveView('REHEARSAL');
               }}
@@ -1027,6 +1089,7 @@ export const CairnWorkspace: React.FC = () => {
               currentRole={currentRole}
               currentUserId={USER_IDS[currentRole]}
               exchanges={exchanges}
+              auditHistory={auditHistory}
               onAskQuestion={handleAskQuestion}
               onReplyQuestion={handleReplyQuestion}
               onReviewQuestion={handleReviewQuestion}
@@ -1062,6 +1125,7 @@ export const CairnWorkspace: React.FC = () => {
               dependencies={knowledgeModel.dependencies}
               failures={knowledgeModel.failures}
               approvedQueries={knowledgeModel.approved_queries}
+              auditHistory={auditHistory}
             />
           )}
 
@@ -1123,10 +1187,11 @@ export const CairnWorkspace: React.FC = () => {
       {/* ========================================================= */}
       <IngestionModal
         projectId={PROJECT_ID}
+        currentUserId={USER_IDS[currentRole]}
         isOpen={isIngestOpen}
         onClose={() => setIsIngestOpen(false)}
         onIngestSuccess={() => {
-          loadLiveData();
+          loadLiveData(false);
           setIsIngestOpen(false);
           setActiveView('KNOWLEDGE');
         }}

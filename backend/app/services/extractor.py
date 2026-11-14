@@ -77,6 +77,23 @@ class RulesBasedExtractor:
 
         return result
 
+    def _normalize_ws(self, text: Optional[str]) -> str:
+        return " ".join((text or "").split())
+
+    def _verify_verbatim_quote(self, quote: Optional[str], raw_content: str) -> bool:
+        """
+        Strict Verbatim Quote Verification gate:
+        Verify extracted quote appears word-for-word (normalized whitespace allowed)
+        inside SourceDocument.content. Rejects fabricated/non-matching quotes.
+        """
+        if not quote or not raw_content:
+            return False
+        norm_quote = self._normalize_ws(quote)
+        norm_content = self._normalize_ws(raw_content)
+        if not norm_quote:
+            return False
+        return norm_quote in norm_content
+
     def _process_structured_payload(
         self,
         document: SourceDocument,
@@ -102,14 +119,22 @@ class RulesBasedExtractor:
             component_cache[comp.name.lower()] = comp
             result.components.append(comp)
 
-        # B. Process Decisions (ZERO-HALLUCINATION ENFORCEMENT)
+        # B. Process Decisions (ZERO-HALLUCINATION + VERBATIM QUOTE VERIFICATION)
         for dec_data in payload.get("decisions", []):
             title = dec_data.get("title", "").strip()
             raw_reason = dec_data.get("reason")
             evidence_quote = dec_data.get("evidence_quote")
 
-            # Check if reason is actually provided in the evidence
-            if raw_reason and str(raw_reason).strip():
+            quote_failed = False
+            if evidence_quote and not self._verify_verbatim_quote(str(evidence_quote), document.content):
+                # Verbatim Quote Verification failed: reject quote and downgrade claim to UNVERIFIED
+                evidence_quote = None
+                clean_reason = None
+                status = DecisionStatus.UNVERIFIED
+                quote_failed = True
+            elif raw_reason and str(raw_reason).strip():
+                if not evidence_quote and self._verify_verbatim_quote(str(raw_reason).strip(), document.content):
+                    evidence_quote = str(raw_reason).strip()
                 clean_reason = str(raw_reason).strip()
                 status = DecisionStatus.EVIDENCE_SUPPORTED
             else:
@@ -136,17 +161,23 @@ class RulesBasedExtractor:
             self.db.flush()
             result.decisions.append(decision)
 
-            # If reason is missing, automatically instantiate a KnowledgeGap
-            if status == DecisionStatus.REASON_MISSING:
+            # Flag KnowledgeGap for missing reason or failed verbatim verification
+            if status in (DecisionStatus.REASON_MISSING, DecisionStatus.UNVERIFIED):
+                gap_type = GapType.UNVERIFIED_ASSUMPTION if quote_failed else GapType.MISSING_REASON
+                gap_desc = (
+                    f"Extracted quote for decision '{decision.title}' failed verbatim verification against '{document.title}' and was rejected."
+                    if quote_failed
+                    else f"Decision '{decision.title}' is documented in source '{document.title}', but no explanation was recorded."
+                )
                 gap = KnowledgeGap(
                     project_id=self.project_id,
                     component_id=matched_comp_id,
                     decision_id=decision.id,
-                    title=f"Missing Reason: {decision.title}",
-                    description=f"Decision '{decision.title}' is documented in source '{document.title}', but no explanation was recorded.",
-                    gap_type=GapType.MISSING_REASON,
+                    title=f"{'Unverified Quote' if quote_failed else 'Missing Reason'}: {decision.title}",
+                    description=gap_desc,
+                    gap_type=gap_type,
                     status=GapStatus.OPEN,
-                    question_to_departing=f"Why was the decision '{decision.title}' made, and what alternatives were rejected?"
+                    question_to_departing=f"Why was the decision '{decision.title}' made, and what primary source verifies it?"
                 )
                 self.db.add(gap)
                 result.knowledge_gaps.append(gap)
@@ -228,13 +259,15 @@ class RulesBasedExtractor:
                         reason_found = m.group(1).strip()
                         break
 
-                if reason_found:
+                if reason_found and self._verify_verbatim_quote(line, document.content):
                     status = DecisionStatus.EVIDENCE_SUPPORTED
                     clean_reason = reason_found
+                    verified_quote = line
                 else:
                     # Invariant 1: Mandatory null reason and reason_missing status
                     clean_reason = None
                     status = DecisionStatus.REASON_MISSING
+                    verified_quote = line if self._verify_verbatim_quote(line, document.content) else None
 
                 decision = Decision(
                     project_id=self.project_id,
@@ -242,7 +275,7 @@ class RulesBasedExtractor:
                     reason=clean_reason,
                     status=status,
                     source_id=document.id,
-                    evidence_quote=line
+                    evidence_quote=verified_quote
                 )
                 self.db.add(decision)
                 self.db.flush()
@@ -260,4 +293,91 @@ class RulesBasedExtractor:
                     )
                     self.db.add(gap)
                     result.knowledge_gaps.append(gap)
+
+        # Scan for deterministic code imports and config dependency declarations
+        self._extract_code_and_config_dependencies(document, lines, result)
+
+    def _get_or_create_component(
+        self,
+        name: str,
+        document: SourceDocument,
+        result: ExtractionResult,
+        cache: Dict[str, Component],
+    ) -> Component:
+        key = name.strip().lower()
+        if key in cache:
+            return cache[key]
+        existing = (
+            self.db.query(Component)
+            .filter(Component.project_id == self.project_id, Component.name.ilike(name.strip()))
+            .first()
+        )
+        if existing:
+            cache[key] = existing
+            return existing
+        comp = Component(
+            project_id=self.project_id,
+            name=name.strip(),
+            description=f"Extracted from source '{document.title}'",
+            owner_id=self.default_owner_id,
+            source_id=document.id,
+            status=ComponentStatus.ACTIVE,
+        )
+        self.db.add(comp)
+        self.db.flush()
+        cache[key] = comp
+        result.components.append(comp)
+        return comp
+
+    def _extract_code_and_config_dependencies(
+        self,
+        document: SourceDocument,
+        lines: List[str],
+        result: ExtractionResult,
+    ):
+        """
+        Deterministically extract Python/JS/TS imports and *_SERVICE_URL / config dependency declarations.
+        """
+        py_from_re = re.compile(r"^from\s+([a-zA-Z0-9_\.]+)\s+import\s+")
+        py_imp_re = re.compile(r"^import\s+([a-zA-Z0-9_\.]+)(?:\s|$|,)")
+        js_imp_re = re.compile(r"""^import\s+.*?\s+from\s+['"]([^'"]+)['"]""")
+        cfg_dep_re = re.compile(r"^([A-Z0-9_]*(?:SERVICE_URL|API_URL|ENDPOINT|BROKER_URL|DB_HOST|QUEUE_URL)[A-Z0-9_]*)\s*[:=]\s*(.+)$")
+
+        detected_targets: List[tuple[str, DependencyType, str]] = []
+        for line in lines:
+            if m := py_from_re.match(line):
+                detected_targets.append((m.group(1), DependencyType.CODE_IMPORT, f"Python import: {line}"))
+            elif m := js_imp_re.match(line):
+                detected_targets.append((m.group(1), DependencyType.CODE_IMPORT, f"JS/TS module import: {line}"))
+            elif m := py_imp_re.match(line):
+                detected_targets.append((m.group(1), DependencyType.CODE_IMPORT, f"Python import: {line}"))
+            elif m := cfg_dep_re.match(line):
+                detected_targets.append((f"{m.group(1)} ({m.group(2).strip()})", DependencyType.CONFIG_DEPENDENCY, f"Config dependency: {line}"))
+
+        if not detected_targets:
+            return
+
+        comp_cache: Dict[str, Component] = {}
+        source_label = document.title.split(":", 1)[-1].strip() or document.title
+        source_comp = self._get_or_create_component(source_label, document, result, comp_cache)
+
+        seen_edges = set()
+        for target_name, dep_type, desc in detected_targets:
+            if target_name.lower() in seen_edges:
+                continue
+            seen_edges.add(target_name.lower())
+            target_comp = self._get_or_create_component(target_name, document, result, comp_cache)
+            if source_comp.id == target_comp.id:
+                continue
+            dep = Dependency(
+                project_id=self.project_id,
+                source_component_id=source_comp.id,
+                target_component_id=target_comp.id,
+                dependency_type=dep_type,
+                description=desc,
+                is_hidden=False,
+                source_id=document.id,
+            )
+            self.db.add(dep)
+            result.dependencies.append(dep)
 

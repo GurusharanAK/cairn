@@ -190,6 +190,8 @@ class RehearsalQuestionRead(RehearsalQuestionBase):
     project_id: str
     requester_id: str
     status: RehearsalStatus
+    knowledge_gap_id: Optional[str] = None
+    decision_id: Optional[str] = None
     evidence_answer: Optional[str] = None
     cited_source_ids: Optional[List[str]] = None
     departing_reply: Optional[str] = None
@@ -197,6 +199,19 @@ class RehearsalQuestionRead(RehearsalQuestionBase):
     approved_source_document_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+
+class ApprovalAuditLogRead(OrmBase):
+    id: str
+    project_id: str
+    question_id: str
+    decision_id: Optional[str] = None
+    reviewer_id: str
+    action: str
+    review_note: Optional[str] = None
+    previous_status: str
+    minted_source_id: Optional[str] = None
+    created_at: datetime
 
 # ==========================================
 # PROJECT SCHEMAS (MVP Scope: 1 Project, 1 Leaving)

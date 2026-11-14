@@ -51,6 +51,17 @@ interface KnowledgeModelExplorerProps {
     approved_source_id?: string | null;
     manager_comment?: string | null;
   }>;
+  auditHistory?: Array<{
+    id: string;
+    question_id: string;
+    decision_id?: string | null;
+    reviewer_id: string;
+    action: string;
+    review_note?: string | null;
+    previous_status: string;
+    minted_source_id?: string | null;
+    created_at: string;
+  }>;
 }
 
 export const KnowledgeModelExplorer: React.FC<KnowledgeModelExplorerProps> = ({
@@ -58,7 +69,8 @@ export const KnowledgeModelExplorer: React.FC<KnowledgeModelExplorerProps> = ({
   components,
   dependencies,
   failures,
-  approvedQueries = []
+  approvedQueries = [],
+  auditHistory = []
 }) => {
   const [subTab, setSubTab] = useState<'DECISIONS' | 'APPROVED_QUERIES' | 'COMPONENTS' | 'DEPENDENCIES' | 'FAILURES'>('DECISIONS');
 
@@ -192,6 +204,32 @@ export const KnowledgeModelExplorer: React.FC<KnowledgeModelExplorerProps> = ({
                 </div>
               );
             })}
+
+            {auditHistory.length > 0 && (
+              <div className="mt-6 pt-4 border-t border-cream-300 space-y-2">
+                <h4 className="text-xs font-mono font-bold uppercase text-ink-700">
+                  Immutable Approval Audit Trail ({auditHistory.length})
+                </h4>
+                {auditHistory.map((log) => (
+                  <div key={log.id} className="bg-cream-100 border border-cream-300 p-3 rounded-xl text-[11px] font-mono flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className={`px-1.5 py-0.5 rounded font-bold uppercase ${log.action === 'approved' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-rose-100 text-rose-800 border border-rose-300'}`}>
+                          {log.action}
+                        </span>
+                        <span className="text-ink-900 font-semibold">Reviewer: {log.reviewer_id}</span>
+                        <span className="text-ink-500">({log.previous_status} → {log.action})</span>
+                      </div>
+                      {log.review_note && <div className="text-ink-700 font-sans italic">Note: {log.review_note}</div>}
+                    </div>
+                    <div className="text-right text-ink-600">
+                      {log.minted_source_id && <div className="text-orange-brand font-semibold">Minted: {log.minted_source_id}</div>}
+                      <div>{new Date(log.created_at).toLocaleString()}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -232,6 +270,21 @@ export const KnowledgeModelExplorer: React.FC<KnowledgeModelExplorerProps> = ({
                         Manager Sign-off: <span className="italic font-sans text-ink-800">{q.manager_comment}</span>
                       </p>
                     )}
+
+                    {(() => {
+                      const qLogs = auditHistory.filter(a => a.question_id === q.id);
+                      if (qLogs.length === 0) return null;
+                      return (
+                        <div className="pt-1 space-y-1">
+                          {qLogs.map(log => (
+                            <div key={log.id} className="text-[10px] font-mono text-ink-600 bg-cream-50 px-2 py-1 rounded border border-cream-300">
+                              Audit [{log.action.toUpperCase()}] by {log.reviewer_id} • {new Date(log.created_at).toLocaleString()}
+                              {log.minted_source_id ? ` • Source: ${log.minted_source_id}` : ''}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   <div className="text-right text-[11px] font-mono text-ink-600 flex-shrink-0">

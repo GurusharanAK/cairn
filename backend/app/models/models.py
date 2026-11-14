@@ -342,7 +342,9 @@ class RehearsalQuestion(Base):
     evidence_answer = Column(Text, nullable=True)
     cited_source_ids = Column(JSON, nullable=True)  # List of source document IDs supporting answer
     
-    # Escalated response workflow
+    # Escalated response workflow & deterministic linking
+    knowledge_gap_id = Column(String(36), ForeignKey("knowledge_gaps.id"), nullable=True, index=True)
+    decision_id = Column(String(36), ForeignKey("decisions.id"), nullable=True, index=True)
     departing_reply = Column(Text, nullable=True)
     manager_review_comment = Column(Text, nullable=True)
     approved_source_document_id = Column(String(36), ForeignKey("source_documents.id"), nullable=True)
@@ -354,4 +356,28 @@ class RehearsalQuestion(Base):
     project = relationship("Project", back_populates="rehearsal_questions")
     requester = relationship("User", back_populates="rehearsal_queries", foreign_keys=[requester_id])
     approved_source = relationship("SourceDocument", foreign_keys=[approved_source_document_id])
+    knowledge_gap = relationship("KnowledgeGap", foreign_keys=[knowledge_gap_id])
+    decision = relationship("Decision", foreign_keys=[decision_id])
+
+
+class ApprovalAuditLog(Base):
+    """
+    Immutable append-only audit log recording every Manager approval or rejection decision.
+    """
+    __tablename__ = "approval_audit_logs"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_id = Column(String(36), ForeignKey("rehearsal_questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    decision_id = Column(String(36), ForeignKey("decisions.id"), nullable=True)
+    reviewer_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    action = Column(String(32), nullable=False)  # "approved" or "rejected"
+    review_note = Column(Text, nullable=True)
+    previous_status = Column(String(64), nullable=False)
+    minted_source_id = Column(String(36), ForeignKey("source_documents.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    reviewer = relationship("User", foreign_keys=[reviewer_id])
+    minted_source = relationship("SourceDocument", foreign_keys=[minted_source_id])
+    decision = relationship("Decision", foreign_keys=[decision_id])
 

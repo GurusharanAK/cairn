@@ -1,42 +1,47 @@
 import React, { useState } from 'react';
-import { ingestDocument } from '../api/client';
-import { 
-  FileUp, 
-  CheckCircle2, 
-  AlertCircle, 
-  FileText, 
-  GitCommit, 
-  Layers, 
-  HelpCircle,
-  Plus,
-  ArrowRight,
-  ShieldAlert
+import { ingestDocument, ingestFileArtifact, ingestGitHubSource } from '../api/client';
+import {
+  FileUp,
+  CheckCircle2,
+  AlertCircle,
+  GitCommit,
+  FileText,
+  Upload
 } from 'lucide-react';
 
 interface IngestionModalProps {
   projectId: string;
+  currentUserId?: string;
   isOpen: boolean;
   onClose: () => void;
   onIngestSuccess: () => void;
 }
 
+type IngestMode = 'TEXT' | 'FILE' | 'GITHUB';
+
 export const IngestionModal: React.FC<IngestionModalProps> = ({
   projectId,
+  currentUserId = 'usr-mgr-01',
   isOpen,
   onClose,
   onIngestSuccess
 }) => {
+  const [mode, setMode] = useState<IngestMode>('TEXT');
   const [title, setTitle] = useState('');
   const [sourceType, setSourceType] = useState('DOC');
   const [content, setContent] = useState('');
   const [accessLevel, setAccessLevel] = useState('RESTRICTED_TEAM');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [githubSlug, setGithubSlug] = useState('');
+  const [githubExportJson, setGithubExportJson] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  const handlePreloadDemo = (type: 'COMMIT' | 'DECISION_WITH_REASON' | 'DECISION_WITHOUT_REASON') => {
+  const handlePreloadDemo = (type: 'COMMIT' | 'DECISION_WITH_REASON' | 'DECISION_WITHOUT_REASON' | 'CODE_IMPORTS') => {
+    setMode('TEXT');
     if (type === 'COMMIT') {
       setTitle('git commit 88f2a1: Add Redis cache layer');
       setSourceType('GITHUB_COMMIT');
@@ -45,6 +50,10 @@ export const IngestionModal: React.FC<IngestionModalProps> = ({
       setTitle('Team Slack Export: Notification Polling Interval');
       setSourceType('TASK_EXPORT');
       setContent('Departing Member: Decided to set notification polling interval to 15 seconds. Component: Notification Worker. Owner: Departing Member.');
+    } else if (type === 'CODE_IMPORTS') {
+      setTitle('payment_worker.py: Service & Dependency Imports');
+      setSourceType('DOC');
+      setContent('from auth_core.tokens import verify_jwt\nimport stripe_client\nSETTLEMENT_SERVICE_URL = https://settlement.internal:8443\nDecided to verify JWT signatures locally because round-trip latency exceeded 40ms.');
     } else {
       setTitle('ADR-003: Storage Engine Selection');
       setSourceType('DOC');
@@ -54,19 +63,67 @@ export const IngestionModal: React.FC<IngestionModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !content.trim()) return;
-
     setLoading(true);
     setError(null);
     setResult(null);
 
     try {
-      const data = await ingestDocument(projectId, {
-        title: title.trim(),
-        source_type: sourceType,
-        content: content.trim(),
-        access_level: accessLevel
-      });
+      let data: any;
+      if (mode === 'TEXT') {
+        if (!title.trim() || !content.trim()) {
+          throw new Error('Title and document content are required.');
+        }
+        data = await ingestDocument(
+          projectId,
+          {
+            title: title.trim(),
+            source_type: sourceType,
+            content: content.trim(),
+            access_level: accessLevel
+          },
+          currentUserId
+        );
+      } else if (mode === 'FILE') {
+        if (!selectedFile) {
+          throw new Error('Select a file (.txt, .md, .json, .csv, code) to upload.');
+        }
+        data = await ingestFileArtifact(
+          projectId,
+          selectedFile,
+          {
+            title: title.trim() || undefined,
+            source_type: sourceType || undefined,
+            access_level: accessLevel
+          },
+          currentUserId
+        );
+      } else {
+        let commits: any[] | undefined;
+        let issues: any[] | undefined;
+        if (githubExportJson.trim()) {
+          const parsed = JSON.parse(githubExportJson.trim());
+          if (Array.isArray(parsed)) {
+            commits = parsed;
+          } else {
+            commits = parsed.commits;
+            issues = parsed.issues;
+          }
+        }
+        if (!githubSlug.trim() && !commits && !issues) {
+          throw new Error('Provide either a public GitHub repo slug (owner/repo) or exported commits/issues JSON.');
+        }
+        data = await ingestGitHubSource(
+          projectId,
+          {
+            repo_slug: githubSlug.trim() || undefined,
+            title: title.trim() || undefined,
+            access_level: accessLevel,
+            commits,
+            issues
+          },
+          currentUserId
+        );
+      }
 
       setResult(data);
       onIngestSuccess();
@@ -94,7 +151,7 @@ export const IngestionModal: React.FC<IngestionModalProps> = ({
                 </span>
               </h3>
               <p className="text-xs text-ink-600">
-                Deterministic extraction: claims must carry source IDs. Missing reasons are strictly flagged.
+                Deterministic extraction with strict verbatim quote verification & code dependency detection.
               </p>
             </div>
           </div>
@@ -103,41 +160,80 @@ export const IngestionModal: React.FC<IngestionModalProps> = ({
 
         {/* Content Area */}
         <div className="p-6 overflow-y-auto space-y-5">
-          {/* Demo Preload Chips */}
-          <div className="bg-cream-100 p-3 rounded-xl border border-cream-300 flex items-center gap-2 text-xs shadow-xs">
-            <span className="text-ink-600 font-mono text-[11px] flex-shrink-0 font-semibold">Sample Templates:</span>
+          {/* Ingestion Mode Selector */}
+          <div className="flex items-center gap-2 border-b border-cream-300 pb-3">
             <button
               type="button"
-              onClick={() => handlePreloadDemo('DECISION_WITH_REASON')}
-              className="bg-cream-50 hover:bg-cream-200 text-ink-800 px-2.5 py-1 rounded-lg border border-cream-300 text-[11px] transition-colors shadow-xs"
+              onClick={() => { setMode('TEXT'); setError(null); }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-mono font-semibold flex items-center gap-1.5 transition-colors ${
+                mode === 'TEXT' ? 'bg-ink-950 text-cream-50' : 'bg-cream-100 text-ink-700 hover:bg-cream-200 border border-cream-300'
+              }`}
             >
-              Document with Reason
+              <FileText className="w-3.5 h-3.5" /> Paste Text / Spec
             </button>
             <button
               type="button"
-              onClick={() => handlePreloadDemo('DECISION_WITHOUT_REASON')}
-              className="bg-rose-100 hover:bg-rose-200 text-rose-900 border border-rose-300 px-2.5 py-1 rounded-lg text-[11px] transition-colors font-semibold"
+              onClick={() => { setMode('FILE'); setError(null); }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-mono font-semibold flex items-center gap-1.5 transition-colors ${
+                mode === 'FILE' ? 'bg-ink-950 text-cream-50' : 'bg-cream-100 text-ink-700 hover:bg-cream-200 border border-cream-300'
+              }`}
             >
-              Missing Reason Sample (Triggers Gap)
+              <Upload className="w-3.5 h-3.5" /> Upload Artifact File
             </button>
             <button
               type="button"
-              onClick={() => handlePreloadDemo('COMMIT')}
-              className="bg-cream-50 hover:bg-cream-200 text-ink-800 px-2.5 py-1 rounded-lg border border-cream-300 text-[11px] transition-colors shadow-xs"
+              onClick={() => { setMode('GITHUB'); setError(null); }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-mono font-semibold flex items-center gap-1.5 transition-colors ${
+                mode === 'GITHUB' ? 'bg-ink-950 text-cream-50' : 'bg-cream-100 text-ink-700 hover:bg-cream-200 border border-cream-300'
+              }`}
             >
-              GitHub Commit
+              <GitCommit className="w-3.5 h-3.5" /> GitHub Repo / Export
             </button>
           </div>
 
+          {mode === 'TEXT' && (
+            <div className="bg-cream-100 p-3 rounded-xl border border-cream-300 flex flex-wrap items-center gap-2 text-xs shadow-xs">
+              <span className="text-ink-600 font-mono text-[11px] flex-shrink-0 font-semibold">Sample Templates:</span>
+              <button
+                type="button"
+                onClick={() => handlePreloadDemo('DECISION_WITH_REASON')}
+                className="bg-cream-50 hover:bg-cream-200 text-ink-800 px-2.5 py-1 rounded-lg border border-cream-300 text-[11px] transition-colors shadow-xs"
+              >
+                Document with Reason
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePreloadDemo('DECISION_WITHOUT_REASON')}
+                className="bg-rose-100 hover:bg-rose-200 text-rose-900 border border-rose-300 px-2.5 py-1 rounded-lg text-[11px] transition-colors font-semibold"
+              >
+                Missing Reason (Triggers Gap)
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePreloadDemo('COMMIT')}
+                className="bg-cream-50 hover:bg-cream-200 text-ink-800 px-2.5 py-1 rounded-lg border border-cream-300 text-[11px] transition-colors shadow-xs"
+              >
+                GitHub Commit
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePreloadDemo('CODE_IMPORTS')}
+                className="bg-cream-50 hover:bg-cream-200 text-ink-800 px-2.5 py-1 rounded-lg border border-cream-300 text-[11px] transition-colors shadow-xs"
+              >
+                Code Imports
+              </button>
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="md:col-span-2">
                 <label className="block text-xs font-mono text-ink-700 uppercase mb-1 font-semibold">
-                  Source Title / Commit Name
+                  Source Title {mode !== 'TEXT' && '(Optional)'}
                 </label>
                 <input
                   type="text"
-                  required
+                  required={mode === 'TEXT'}
                   placeholder="e.g. ADR 002: Notification Polling Strategy"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
@@ -147,34 +243,96 @@ export const IngestionModal: React.FC<IngestionModalProps> = ({
 
               <div>
                 <label className="block text-xs font-mono text-ink-700 uppercase mb-1 font-semibold">
-                  Source Type
+                  Clearance Level
                 </label>
                 <select
-                  value={sourceType}
-                  onChange={(e) => setSourceType(e.target.value)}
-                  className="w-full bg-cream-100 border border-cream-300 rounded-xl px-3.5 py-2 text-xs text-ink-950 focus:outline-none focus:border-orange-brand shadow-xs"
+                  value={accessLevel}
+                  onChange={(e) => setAccessLevel(e.target.value)}
+                  className="w-full bg-cream-100 border border-cream-300 rounded-xl px-3 py-2 text-xs text-ink-950 focus:outline-none focus:border-orange-brand shadow-xs"
                 >
-                  <option value="DOC">Architecture Document (DOC/PDF)</option>
-                  <option value="GITHUB_COMMIT">GitHub Commit Message</option>
-                  <option value="TASK_EXPORT">Task Export / Jira / Slack</option>
-                  <option value="APPROVED_NOTE">Approved Technical Note</option>
+                  <option value="PUBLIC">PUBLIC</option>
+                  <option value="RESTRICTED_TEAM">RESTRICTED_TEAM</option>
+                  <option value="RESTRICTED_MANAGER">RESTRICTED_MANAGER</option>
                 </select>
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-mono text-ink-700 uppercase mb-1 font-semibold">
-                Document Raw Text / Extracted Dump
-              </label>
-              <textarea
-                rows={5}
-                required
-                placeholder="Paste verbatim notes, meeting transcription summary, or git commit text here..."
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                className="w-full bg-cream-100 border border-cream-300 rounded-xl p-3 text-xs text-ink-950 placeholder-ink-400 font-mono focus:outline-none focus:border-orange-brand shadow-xs"
-              />
-            </div>
+            {mode === 'TEXT' && (
+              <>
+                <div>
+                  <label className="block text-xs font-mono text-ink-700 uppercase mb-1 font-semibold">
+                    Source Type
+                  </label>
+                  <select
+                    value={sourceType}
+                    onChange={(e) => setSourceType(e.target.value)}
+                    className="w-full bg-cream-100 border border-cream-300 rounded-xl px-3.5 py-2 text-xs text-ink-950 focus:outline-none focus:border-orange-brand shadow-xs"
+                  >
+                    <option value="DOC">Architecture Document (DOC/PDF)</option>
+                    <option value="GITHUB_COMMIT">GitHub Commit Message</option>
+                    <option value="TASK_EXPORT">Task Export / Jira / Slack</option>
+                    <option value="APPROVED_NOTE">Approved Technical Note</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-mono text-ink-700 uppercase mb-1 font-semibold">
+                    Document Raw Text / Extracted Dump
+                  </label>
+                  <textarea
+                    rows={5}
+                    required
+                    placeholder="Paste verbatim notes, code imports, config URLs, or git commit text here..."
+                    value={content}
+                    onChange={(e) => setContent(e.target.value)}
+                    className="w-full bg-cream-100 border border-cream-300 rounded-xl p-3 text-xs text-ink-950 placeholder-ink-400 font-mono focus:outline-none focus:border-orange-brand shadow-xs"
+                  />
+                </div>
+              </>
+            )}
+
+            {mode === 'FILE' && (
+              <div className="bg-cream-100 border border-dashed border-cream-400 rounded-xl p-5 space-y-2 text-center">
+                <input
+                  type="file"
+                  accept=".txt,.md,.json,.csv,.py,.ts,.tsx,.js,.yaml,.yml,.env,.pdf,.docx"
+                  onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                  className="text-xs font-mono text-ink-800"
+                />
+                <p className="text-[11px] text-ink-600 font-mono">
+                  Supports .txt, .md, .json, .csv, source files (.py/.ts/.js), plus .pdf/.docx when parsers are installed.
+                </p>
+              </div>
+            )}
+
+            {mode === 'GITHUB' && (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-mono text-ink-700 uppercase mb-1 font-semibold">
+                    Public GitHub Repository (owner/repo)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. octocat/Hello-World"
+                    value={githubSlug}
+                    onChange={(e) => setGithubSlug(e.target.value)}
+                    className="w-full bg-cream-100 border border-cream-300 rounded-xl px-3.5 py-2 text-xs text-ink-950 placeholder-ink-400 font-mono focus:outline-none focus:border-orange-brand shadow-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-mono text-ink-700 uppercase mb-1 font-semibold">
+                    Or Paste Exported Commits / Issues JSON
+                  </label>
+                  <textarea
+                    rows={4}
+                    placeholder='{"commits": [{"sha": "a1b2c3d", "author": "dev", "message": "Decided to use Redis because..."}], "issues": []}'
+                    value={githubExportJson}
+                    onChange={(e) => setGithubExportJson(e.target.value)}
+                    className="w-full bg-cream-100 border border-cream-300 rounded-xl p-3 text-xs text-ink-950 placeholder-ink-400 font-mono focus:outline-none focus:border-orange-brand shadow-xs"
+                  />
+                </div>
+              </div>
+            )}
 
             {error && (
               <div className="bg-rose-100 border border-rose-300 p-3 rounded-xl text-xs text-rose-900 flex items-center gap-2">
@@ -194,8 +352,8 @@ export const IngestionModal: React.FC<IngestionModalProps> = ({
                   <span className="bg-cream-50 px-2 py-1 rounded text-emerald-800 font-bold border border-cream-300">
                     Verified: {result.summary.evidence_supported_decisions}
                   </span>
-                  <span className="bg-cream-50 px-2 py-1 rounded text-rose-800 border border-cream-300">
-                    Missing Reason: {result.summary.reason_missing_decisions}
+                  <span className="bg-cream-50 px-2 py-1 rounded text-indigo-800 border border-cream-300">
+                    Deps: {result.summary.dependencies_count}
                   </span>
                   <span className="bg-cream-50 px-2 py-1 rounded text-amber-800 border border-cream-300">
                     Gaps Flagged: {result.summary.knowledge_gaps_count}

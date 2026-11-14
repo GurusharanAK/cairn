@@ -47,11 +47,17 @@ export interface StressTestReport {
 
 interface ContinuityStressTestViewProps {
   report: StressTestReport;
+  isMultihopPreview?: boolean;
+  onSimulateMultihop?: () => Promise<void>;
+  onResetLiveReport?: () => void;
   onInitiateRehearsalForComponent?: (componentName: string) => void;
 }
 
 export const ContinuityStressTestView: React.FC<ContinuityStressTestViewProps> = ({
   report,
+  isMultihopPreview = false,
+  onSimulateMultihop,
+  onResetLiveReport,
   onInitiateRehearsalForComponent
 }) => {
   const [selectedCompId, setSelectedCompId] = useState<string>(
@@ -93,8 +99,26 @@ export const ContinuityStressTestView: React.FC<ContinuityStressTestViewProps> =
           </p>
         </div>
 
-        {/* Impact Summary Badges */}
-        <div className="flex items-center gap-3 font-mono text-xs">
+        {/* Impact Summary Badges + 3-Hop Cascade Simulation Toggle */}
+        <div className="flex flex-wrap items-center gap-3 font-mono text-xs">
+          {onSimulateMultihop && !isMultihopPreview && (
+            <button
+              onClick={onSimulateMultihop}
+              className="bg-ink-950 hover:bg-ink-800 text-cream-50 px-3 py-2 rounded-xl text-[11px] font-bold flex items-center gap-1.5 shadow-xs transition-colors"
+              title="Run non-destructive 3+ hop BFS dependency cascade template"
+            >
+              <GitFork className="w-3.5 h-3.5 text-orange-brand" />
+              Simulate 3-Hop Cascade
+            </button>
+          )}
+          {isMultihopPreview && onResetLiveReport && (
+            <button
+              onClick={onResetLiveReport}
+              className="bg-amber-100 hover:bg-amber-200 text-amber-950 border border-amber-300 px-3 py-2 rounded-xl text-[11px] font-bold shadow-xs transition-colors"
+            >
+              Back to Live Project Report
+            </button>
+          )}
           <div className="bg-cream-100 border border-cream-300 px-3.5 py-2 rounded-xl text-center shadow-xs">
             <span className="text-[10px] text-ink-600 block">DIRECT SPOFs</span>
             <span className="text-base font-bold text-orange-brand">{report.summary.direct_count}</span>

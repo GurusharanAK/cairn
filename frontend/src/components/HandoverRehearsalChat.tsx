@@ -34,11 +34,24 @@ export interface RehearsalExchange {
   created_at: string;
 }
 
+export interface AuditTrailEntry {
+  id: string;
+  question_id: string;
+  decision_id?: string | null;
+  reviewer_id: string;
+  action: string;
+  review_note?: string | null;
+  previous_status: string;
+  minted_source_id?: string | null;
+  created_at: string;
+}
+
 interface HandoverRehearsalChatProps {
   projectId: string;
   currentRole: UserRole;
   currentUserId: string;
   exchanges: RehearsalExchange[];
+  auditHistory?: AuditTrailEntry[];
   onAskQuestion: (question: string) => Promise<void>;
   onReplyQuestion: (questionId: string, replyText: string) => Promise<void>;
   onReviewQuestion: (questionId: string, approved: boolean, comment?: string) => Promise<void>;
@@ -51,6 +64,7 @@ export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
   currentRole,
   currentUserId,
   exchanges,
+  auditHistory = [],
   onAskQuestion,
   onReplyQuestion,
   onReviewQuestion,
@@ -346,6 +360,12 @@ export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
                     <span>MANAGER SIGN-OFF: {ex.manager_review_comment || 'Approved by Manager'}</span>
                     <span className="text-emerald-800 font-bold">MINTED SOURCE: {ex.approved_source_document_id}</span>
                   </div>
+                  {auditHistory.filter(a => a.question_id === ex.id).map(entry => (
+                    <div key={entry.id} className="bg-cream-50 border border-emerald-200 rounded-lg px-2.5 py-1.5 text-[10px] font-mono text-ink-700 flex flex-wrap items-center justify-between gap-2">
+                      <span>AUDIT [{entry.action.toUpperCase()}] by {entry.reviewer_id} ({entry.previous_status} → {entry.action})</span>
+                      <span>{new Date(entry.created_at).toLocaleString()}</span>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
