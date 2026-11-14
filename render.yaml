@@ -17,3 +17,7 @@ services:
         value: 3.11.9
       - key: DATABASE_URL
         value: sqlite:///cairn_demo.db
+      - key: CAIRN_ALLOW_LEGACY_HEADER_AUTH
+        value: "false"
+      - key: CAIRN_SECRET_KEY
+        generateValue: true

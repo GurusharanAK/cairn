@@ -1,8 +1,10 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.db.database import init_db
+from app.core.security import get_current_user
+from app.models.models import User
 from app.api.auth import router as auth_router
 from app.api.ingest import router as ingest_router
 from app.api.stress_test import router as stress_test_router
@@ -56,10 +58,14 @@ def health_check():
 
 @app.post("/api/demo/reset")
 @app.get("/api/demo/reset")
-def reset_demo():
+def reset_demo(current_user: User = Depends(get_current_user)):
     from app.seeds.seed_demo_data import reset_database
     reset_database()
-    return {"status": "reset", "message": "Demo data reset to example benchmark state"}
+    return {
+        "status": "reset",
+        "reset_by": current_user.id,
+        "message": "Demo data reset to example benchmark state",
+    }
 
 frontend_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist"))
 if os.path.exists(frontend_dist):

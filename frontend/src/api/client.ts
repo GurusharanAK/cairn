@@ -140,13 +140,18 @@ async function authFetch(
 }
 
 export async function resetDemoData(userId: string = 'usr-mgr-01') {
-  clearTokenCache();
-  const res = await fetchWithRetry(`${API_BASE}/api/demo/reset`, {
+  const res = await authFetch(`${API_BASE}/api/demo/reset`, userId, {
     method: 'POST'
   });
   const result = await handleResponse(res, 'Failed to reset demo data');
+  clearTokenCache();
   await loginAsUser(userId, { forceRefresh: true });
   return result;
+}
+
+export async function fetchProjects(userId: string, retry?: RetryOptions) {
+  const res = await authFetch(`${API_BASE}/api/projects`, userId, {}, retry);
+  return handleResponse(res, 'Failed to fetch projects');
 }
 
 export async function fetchProjectScore(projectId: string, userId: string, retry?: RetryOptions) {

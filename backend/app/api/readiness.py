@@ -28,6 +28,32 @@ from app.services.stress_test import calculate_continuity_score
 router = APIRouter(prefix="/api/projects", tags=["Successor Readiness & Handover"])
 
 
+@router.get(
+    "",
+    summary="List projects accessible to the authenticated user"
+)
+def list_projects(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    projects = db.query(Project).order_by(Project.created_at.asc()).all()
+    if current_user.role == UserRole.MANAGER:
+        allowed = projects
+    else:
+        allowed = [
+            p for p in projects
+            if current_user.id in {p.manager_id, p.departing_member_id, p.incoming_member_id}
+        ]
+    return [
+        {
+            "id": p.id,
+            "name": p.name,
+            "description": p.description,
+        }
+        for p in allowed
+    ]
+
+
 class ReadinessScenario(BaseModel):
     scenario_id: str
     component_name: str

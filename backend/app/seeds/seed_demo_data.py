@@ -280,10 +280,135 @@ def seed_synthetic_project(db: Session):
     )
 
     db.add_all([gap_reason, gap_hidden_dep, q_postgres, q_retry])
+    db.flush()
+
+    # 10. Seed Project 2: FinTrack Settlement Mesh — Multi-Hop Demo (Default 3-Hop Cascade Graph)
+    # Kept in a separate project so Project 1 preserves exact 54.67 -> 72.67 benchmark scores.
+    mesh_project = Project(
+        id="proj-fintrack-mesh",
+        name="FinTrack Settlement Mesh — Multi-Hop Demo",
+        description="4-service settlement topology demonstrating a deterministic 3-hop departure cascade.",
+        repository_url="https://github.com/cairn-continuity/fintrack-settlement-mesh",
+        manager_id=manager.id,
+        departing_member_id=departing_member.id,
+        incoming_member_id=incoming_member.id,
+    )
+    db.add(mesh_project)
+    db.flush()
+
+    mesh_doc = SourceDocument(
+        id="src-mesh-arch-01",
+        project_id=mesh_project.id,
+        title="Settlement Mesh Multi-Hop Topology Specification",
+        source_type=SourceType.DOC,
+        content=(
+            "Executive Reporting Portal queries Settlement Batch Processor nightly; "
+            "Settlement Batch Processor pulls reconciled ledger slices from Analytics Dashboard; "
+            "Analytics Dashboard calls Authentication Service to validate signed OAuth tokens. "
+            "We decided to isolate nightly batch settlement because peak reconciliation spikes saturated live OLTP queues."
+        ),
+        access_level=AccessLevel.RESTRICTED_TEAM,
+        created_by_id=departing_member.id,
+    )
+    db.add(mesh_doc)
+    db.flush()
+
+    mesh_auth = Component(
+        id="comp-mesh-auth",
+        project_id=mesh_project.id,
+        name="Authentication Service",
+        description="Root OAuth & HMAC token authority maintained by Departing Member.",
+        owner_id=departing_member.id,
+        source_id=mesh_doc.id,
+        status=ComponentStatus.ACTIVE,
+    )
+    mesh_dash = Component(
+        id="comp-mesh-dash",
+        project_id=mesh_project.id,
+        name="Analytics Dashboard",
+        description="Real-time ledger aggregation API (Hop 1).",
+        owner_id=colleague_c.id,
+        source_id=mesh_doc.id,
+        status=ComponentStatus.ACTIVE,
+    )
+    mesh_settlement = Component(
+        id="comp-mesh-settlement",
+        project_id=mesh_project.id,
+        name="Settlement Batch Processor",
+        description="End-of-day clearinghouse reconciliation worker (Hop 2).",
+        owner_id=colleague_c.id,
+        source_id=mesh_doc.id,
+        status=ComponentStatus.ACTIVE,
+    )
+    mesh_portal = Component(
+        id="comp-mesh-exec-portal",
+        project_id=mesh_project.id,
+        name="Executive Reporting Portal",
+        description="Regulatory compliance & CFO export dashboard (Hop 3).",
+        owner_id=incoming_member.id,
+        source_id=mesh_doc.id,
+        status=ComponentStatus.ACTIVE,
+    )
+    db.add_all([mesh_auth, mesh_dash, mesh_settlement, mesh_portal])
+    db.flush()
+
+    # 3-Hop chain: Executive Reporting Portal -> Settlement Batch Processor -> Analytics Dashboard -> Authentication Service
+    mesh_dep_1 = Dependency(
+        id="dep-mesh-hop-1",
+        project_id=mesh_project.id,
+        source_component_id=mesh_dash.id,
+        target_component_id=mesh_auth.id,
+        dependency_type=DependencyType.CALLS_API,
+        description="Analytics Dashboard validates service tokens via Authentication Service.",
+        is_hidden=False,
+        source_id=mesh_doc.id,
+    )
+    mesh_dep_2 = Dependency(
+        id="dep-mesh-hop-2",
+        project_id=mesh_project.id,
+        source_component_id=mesh_settlement.id,
+        target_component_id=mesh_dash.id,
+        dependency_type=DependencyType.CONFIG_DEPENDENCY,
+        description="Settlement Batch Processor reads reconciled ledger summaries from Analytics Dashboard.",
+        is_hidden=False,
+        source_id=mesh_doc.id,
+    )
+    mesh_dep_3 = Dependency(
+        id="dep-mesh-hop-3",
+        project_id=mesh_project.id,
+        source_component_id=mesh_portal.id,
+        target_component_id=mesh_settlement.id,
+        dependency_type=DependencyType.CALLS_API,
+        description="Executive Reporting Portal relies on undocumented internal export endpoint from Settlement Batch Processor.",
+        is_hidden=True,
+        source_id=mesh_doc.id,
+    )
+    mesh_dec = Decision(
+        id="dec-mesh-batch-isolation",
+        project_id=mesh_project.id,
+        component_id=mesh_settlement.id,
+        title="Isolate Nightly Batch Settlement Queue",
+        reason="Peak reconciliation spikes saturated live OLTP queues.",
+        status=DecisionStatus.EVIDENCE_SUPPORTED,
+        source_id=mesh_doc.id,
+        evidence_quote="We decided to isolate nightly batch settlement because peak reconciliation spikes saturated live OLTP queues.",
+    )
+    mesh_gap = KnowledgeGap(
+        id="gap-mesh-portal-settlement",
+        project_id=mesh_project.id,
+        component_id=mesh_portal.id,
+        title="Hidden Dependency: Executive Reporting Portal -> Settlement Batch Processor",
+        description="Executive Reporting Portal consumes undocumented Settlement Batch Processor schema.",
+        gap_type=GapType.HIDDEN_DEPENDENCY,
+        status=GapStatus.OPEN,
+        question_to_departing="What internal reconciliation contract does Executive Reporting Portal expect at hop 3?",
+    )
+    db.add_all([mesh_dep_1, mesh_dep_2, mesh_dep_3, mesh_dec, mesh_gap])
     db.commit()
 
     print("Synthetic Demonstration Seed Loaded Successfully:")
-    print(f"- Project: {project.name} ({project.id})")
+    print(f"- Project 1: {project.name} ({project.id})")
+    print(f"- Project 2: {mesh_project.name} ({mesh_project.id}, 3-hop cascade graph)")
     print(f"- Manager: {manager.full_name}")
     print(f"- Departing Member: {departing_member.full_name}")
     print(f"- Successor: {incoming_member.full_name}")

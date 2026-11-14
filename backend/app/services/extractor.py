@@ -133,10 +133,20 @@ class RulesBasedExtractor:
                 status = DecisionStatus.UNVERIFIED
                 quote_failed = True
             elif raw_reason and str(raw_reason).strip():
-                if not evidence_quote and self._verify_verbatim_quote(str(raw_reason).strip(), document.content):
-                    evidence_quote = str(raw_reason).strip()
-                clean_reason = str(raw_reason).strip()
-                status = DecisionStatus.EVIDENCE_SUPPORTED
+                reason_str = str(raw_reason).strip()
+                if evidence_quote:
+                    clean_reason = reason_str
+                    status = DecisionStatus.EVIDENCE_SUPPORTED
+                elif self._verify_verbatim_quote(reason_str, document.content):
+                    evidence_quote = reason_str
+                    clean_reason = reason_str
+                    status = DecisionStatus.EVIDENCE_SUPPORTED
+                else:
+                    # Reason claimed in payload without a verbatim match in SourceDocument.content
+                    evidence_quote = None
+                    clean_reason = None
+                    status = DecisionStatus.UNVERIFIED
+                    quote_failed = True
             else:
                 # INVARIANT 1: Zero-Hallucination Mandate
                 clean_reason = None

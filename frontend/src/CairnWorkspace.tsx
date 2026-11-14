@@ -8,6 +8,7 @@ import { IngestionModal } from './components/IngestionModal';
 import { KnowledgeModelExplorer } from './components/KnowledgeModelExplorer';
 import { DepartingMemberWorkspace } from './components/DepartingMemberWorkspace';
 import {
+  fetchProjects,
   fetchProjectScore,
   fetchStressTest,
   simulateMultihopStressTest,
@@ -209,18 +210,23 @@ export const CairnWorkspace: React.FC = () => {
   const [auditHistory, setAuditHistory] = useState<AuditTrailEntry[]>([]);
   const [isMultihopPreview, setIsMultihopPreview] = useState(false);
   const [liveStressBackup, setLiveStressBackup] = useState<StressTestReport | null>(null);
+  const [projectId, setProjectId] = useState<string>("proj-cairn-mvp");
+  const [projects, setProjects] = useState<Array<{ id: string; name: string; description?: string }>>([
+    { id: "proj-cairn-mvp", name: "FinTrack Core Banking Ledger" },
+    { id: "proj-fintrack-mesh", name: "FinTrack Settlement Mesh — Multi-Hop Demo" }
+  ]);
   const [isLiveConnected, setIsLiveConnected] = useState(false);
   const [isWakingBackend, setIsWakingBackend] = useState(false);
   const [quickQuestionInput, setQuickQuestionInput] = useState('');
 
-  const PROJECT_ID = "proj-cairn-mvp";
+  const PROJECT_ID = projectId;
   const USER_IDS: Record<UserRole, string> = {
     MANAGER: "usr-mgr-01",
     DEPARTING_MEMBER: "usr-dev-a",
     INCOMING_MEMBER: "usr-dev-b"
   };
 
-  const loadLiveData = async (withColdStartRetry: boolean = false) => {
+  const loadLiveData = async (withColdStartRetry: boolean = false, activeProjectId: string = PROJECT_ID) => {
     const retryOpts = withColdStartRetry
       ? {
           retries: 3,
@@ -232,16 +238,20 @@ export const CairnWorkspace: React.FC = () => {
     try {
       const uid = USER_IDS[currentRole];
       await loginAsUser(uid, { retry: retryOpts });
-      const [scoreRes, stressRes, questionsRes, scenRes, packetRes, kmRes, auditRes] = await Promise.allSettled([
-        fetchProjectScore(PROJECT_ID, uid, retryOpts),
-        fetchStressTest(PROJECT_ID, uid, retryOpts),
-        fetchRehearsalQuestions(PROJECT_ID, uid, retryOpts),
-        fetchReadinessScenarios(PROJECT_ID, uid, retryOpts),
-        fetchHandoverPacket(PROJECT_ID, uid, retryOpts),
-        fetchKnowledgeModel(PROJECT_ID, uid, retryOpts),
-        fetchAuditHistory(PROJECT_ID, uid, retryOpts)
+      const [projRes, scoreRes, stressRes, questionsRes, scenRes, packetRes, kmRes, auditRes] = await Promise.allSettled([
+        fetchProjects(uid, retryOpts),
+        fetchProjectScore(activeProjectId, uid, retryOpts),
+        fetchStressTest(activeProjectId, uid, retryOpts),
+        fetchRehearsalQuestions(activeProjectId, uid, retryOpts),
+        fetchReadinessScenarios(activeProjectId, uid, retryOpts),
+        fetchHandoverPacket(activeProjectId, uid, retryOpts),
+        fetchKnowledgeModel(activeProjectId, uid, retryOpts),
+        fetchAuditHistory(activeProjectId, uid, retryOpts)
       ]);
 
+      if (projRes.status === 'fulfilled' && Array.isArray(projRes.value) && projRes.value.length > 0) {
+        setProjects(projRes.value);
+      }
       if (scoreRes.status === 'fulfilled') {
         setScoreData(scoreRes.value);
         setIsLiveConnected(true);
@@ -287,7 +297,7 @@ export const CairnWorkspace: React.FC = () => {
     }
   };
 
-  // Explicit user-triggered demo reset ONLY (never auto-triggered on page reload)
+  // Explicit user-triggered demo reset (or opt-in ?reset=1 / ?reset=true query param ONLY)
   const resetAllToExampleData = async () => {
     try {
       await resetDemoData(USER_IDS[currentRole]);
@@ -301,16 +311,26 @@ export const CairnWorkspace: React.FC = () => {
     setAuditHistory([]);
     setIsMultihopPreview(false);
     setQuickQuestionInput('');
-    await loadLiveData();
+    await loadLiveData(false, PROJECT_ID);
   };
 
-  // Initial mount & role switches fetch live GET endpoints (with cold-start retry on first load)
+  // Mount: support opt-in ?reset=1 / ?reset=true and clean URL, otherwise read-only GET sync with cold-start retry
   const isFirstMount = React.useRef(true);
   useEffect(() => {
     const initial = isFirstMount.current;
     isFirstMount.current = false;
-    loadLiveData(initial);
-  }, [currentRole]);
+    if (initial && typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const resetParam = params.get('reset');
+      if (resetParam === '1' || resetParam === 'true') {
+        const cleanUrl = window.location.pathname + window.location.hash;
+        window.history.replaceState({}, document.title, cleanUrl);
+        resetAllToExampleData();
+        return;
+      }
+    }
+    loadLiveData(initial, PROJECT_ID);
+  }, [currentRole, projectId]);
 
   // Handle Asking Question
   const handleAskQuestion = async (questionText: string) => {
@@ -491,15 +511,25 @@ export const CairnWorkspace: React.FC = () => {
             <CairnLogo size="md" showText={true} inverted={true} />
           </div>
 
-          {/* Project Boundary Card (MVP Scope Lock) */}
-          <div className="p-3.5 m-3 bg-ink-950/80 border border-ink-800 rounded-xl space-y-1 shadow-inner">
+          {/* Project Boundary Card & Project Switcher */}
+          <div className="p-3.5 m-3 bg-ink-950/80 border border-ink-800 rounded-xl space-y-1.5 shadow-inner">
             <div className="flex items-center justify-between text-[10px] font-mono text-cream-400">
               <span className="flex items-center gap-1 text-cream-300 font-semibold">
-                <FolderGit2 className="w-3.5 h-3.5 text-orange-bright" /> BOUNDARY LOCK
+                <FolderGit2 className="w-3.5 h-3.5 text-orange-bright" /> ACTIVE PROJECT
               </span>
-              <span className="text-orange-bright font-bold">1 PROJECT</span>
+              <span className="text-orange-bright font-bold">{projects.length} SEEDED</span>
             </div>
-            <p className="text-xs font-bold text-cream-50 truncate">FinTrack Core Ledger</p>
+            <select
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+              className="w-full bg-ink-900 border border-ink-700 rounded-lg px-2 py-1 text-[11px] font-bold text-cream-50 focus:outline-none focus:border-orange-brand"
+            >
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
             <p className="text-[11px] text-cream-400 truncate">Leaving: Departing Member</p>
           </div>
 
@@ -655,9 +685,9 @@ export const CairnWorkspace: React.FC = () => {
                 }`}
               />
               {isWakingBackend
-                ? 'Waking Backend...'
+                ? 'Waking Server...'
                 : isLiveConnected
-                ? 'API Live (Signed)'
+                ? 'API Live'
                 : 'Local Fallback'}
             </span>
             <span>v1.0.0</span>
@@ -708,7 +738,7 @@ export const CairnWorkspace: React.FC = () => {
               title="Clear all entered data and restore example data"
             >
               <RotateCcw className="w-3.5 h-3.5 text-amber-700" />
-              <span className="hidden md:inline">Reset Example Data</span>
+              <span className="hidden md:inline">Reset Demo</span>
             </button>
           </div>
         </header>

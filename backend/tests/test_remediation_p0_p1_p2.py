@@ -441,3 +441,173 @@ def test_multihop_three_hop_bfs_cascade(client_and_db):
 
     # Ensure project continuity score wasn't mutated by simulation
     assert calculate_continuity_score("proj-cairn-mvp", db).overall_score == pre_score
+
+
+# ==============================================================================
+# REQ-14: REAL BINARY PDF & DOCX INGESTION + VERBATIM QUOTE ENFORCEMENT
+# ==============================================================================
+def _build_minimal_pdf_bytes(text: str) -> bytes:
+    """Construct a valid single-page PDF 1.4 binary document with accurate xref offsets."""
+    escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    stream_body = f"BT /F1 12 Tf 72 720 Td ({escaped}) Tj ET".encode("latin-1")
+    objects = [
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+        (
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n"
+        ),
+        b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+        (
+            f"5 0 obj\n<< /Length {len(stream_body)} >>\nstream\n".encode("latin-1")
+            + stream_body
+            + b"\nendstream\nendobj\n"
+        ),
+    ]
+    buf = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for obj in objects:
+        offsets.append(len(buf))
+        buf.extend(obj)
+    xref_pos = len(buf)
+    buf.extend(f"xref\n0 {len(objects) + 1}\n".encode("latin-1"))
+    buf.extend(b"0000000000 65535 f \n")
+    for off in offsets[1:]:
+        buf.extend(f"{off:010d} 00000 n \n".encode("latin-1"))
+    buf.extend(
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n".encode("latin-1")
+    )
+    return bytes(buf)
+
+
+def test_real_pdf_and_docx_binary_ingestion(client_and_db):
+    import io
+    import docx
+
+    client, _ = client_and_db
+    mgr_token = client.post("/api/auth/login", json={"user_id": "usr-mgr-01"}).json()["access_token"]
+    headers = {"Authorization": f"Bearer {mgr_token}"}
+
+    # 1. Upload real binary PDF
+    pdf_text = "Decided to use Kafka for settlement events because replayable audit logs are required."
+    pdf_bytes = _build_minimal_pdf_bytes(pdf_text)
+    pdf_res = client.post(
+        "/api/projects/proj-cairn-mvp/ingest/file",
+        headers=headers,
+        files={"file": ("adr_kafka.pdf", pdf_bytes, "application/pdf")},
+        data={"access_level": "RESTRICTED_TEAM"},
+    )
+    assert pdf_res.status_code == 201
+    pdf_body = pdf_res.json()
+    assert pdf_body["source_document"]["source_type"] == "PDF"
+    assert len(pdf_body["decisions_extracted"]) == 1
+    assert pdf_body["decisions_extracted"][0]["status"] == "evidence_supported"
+    assert "replayable audit logs" in pdf_body["decisions_extracted"][0]["evidence_quote"]
+
+    # 2. Upload real binary DOCX
+    word_doc = docx.Document()
+    word_doc.add_paragraph(
+        "Decided to rotate Vault TLS keys every 30 days because compliance mandates monthly certificate rotation."
+    )
+    docx_buf = io.BytesIO()
+    word_doc.save(docx_buf)
+
+    docx_res = client.post(
+        "/api/projects/proj-cairn-mvp/ingest/file",
+        headers=headers,
+        files={
+            "file": (
+                "security_policy.docx",
+                docx_buf.getvalue(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        data={"access_level": "RESTRICTED_TEAM"},
+    )
+    assert docx_res.status_code == 201
+    docx_body = docx_res.json()
+    assert len(docx_body["decisions_extracted"]) == 1
+    assert docx_body["decisions_extracted"][0]["status"] == "evidence_supported"
+    assert "monthly certificate rotation" in docx_body["decisions_extracted"][0]["evidence_quote"]
+
+    # 3. Corrupted PDF / DOCX return clean 400 Bad Request
+    bad_pdf = client.post(
+        "/api/projects/proj-cairn-mvp/ingest/file",
+        headers=headers,
+        files={"file": ("broken.pdf", b"not-a-valid-pdf-stream", "application/pdf")},
+        data={"access_level": "RESTRICTED_TEAM"},
+    )
+    assert bad_pdf.status_code == 400
+
+    bad_docx = client.post(
+        "/api/projects/proj-cairn-mvp/ingest/file",
+        headers=headers,
+        files={"file": ("broken.docx", b"not-a-valid-zip-docx", "application/octet-stream")},
+        data={"access_level": "RESTRICTED_TEAM"},
+    )
+    assert bad_docx.status_code == 400
+
+
+# ==============================================================================
+# REQ-13: PRODUCTION LOCKDOWN WHEN CAIRN_ALLOW_LEGACY_HEADER_AUTH="false"
+# ==============================================================================
+def test_legacy_x_user_id_rejected_when_disabled(client_and_db, monkeypatch):
+    client, _ = client_and_db
+    monkeypatch.setenv("CAIRN_ALLOW_LEGACY_HEADER_AUTH", "false")
+
+    # Even canonical X-User-ID or forged X-User-ID without Bearer token must be 401
+    assert client.get(
+        "/api/projects/proj-cairn-mvp/knowledge-model",
+        headers={"X-User-ID": "usr-mgr-01"},
+    ).status_code == 401
+    assert client.get(
+        "/api/projects/proj-cairn-mvp/knowledge-model",
+        headers={"X-User-ID": "forged-admin"},
+    ).status_code == 401
+    assert client.post(
+        "/api/demo/reset",
+        headers={"X-User-ID": "usr-mgr-01"},
+    ).status_code == 401
+
+    # Valid signed Bearer token succeeds across protected routes
+    token = client.post("/api/auth/login", json={"user_id": "usr-dev-b"}).json()["access_token"]
+    assert client.get(
+        "/api/projects/proj-cairn-mvp/knowledge-model",
+        headers={"Authorization": f"Bearer {token}"},
+    ).status_code == 200
+
+
+# ==============================================================================
+# REQ-15: DEFAULT SEEDED 3+ HOP CASCADE GRAPH + PROJECT 1 BENCHMARK INVARIANT
+# ==============================================================================
+def test_seeded_multihop_mesh_and_project_1_benchmark_preserved(client_and_db):
+    client, db = client_and_db
+
+    token = client.post("/api/auth/login", json={"user_id": "usr-mgr-01"}).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # 1. Project selector endpoint exposes both seeded projects
+    proj_list = client.get("/api/projects", headers=headers)
+    assert proj_list.status_code == 200
+    proj_ids = [p["id"] for p in proj_list.json()]
+    assert "proj-cairn-mvp" in proj_ids
+    assert "proj-fintrack-mesh" in proj_ids
+
+    # 2. Seeded Project 2 (FinTrack Settlement Mesh) executes 3-hop BFS out of the box
+    mesh_stress = client.get("/api/projects/proj-fintrack-mesh/stress-test", headers=headers)
+    assert mesh_stress.status_code == 200
+    mesh_report = mesh_stress.json()
+    assert mesh_report["summary"]["max_cascade_depth"] >= 3
+
+    by_name = {c["component_name"]: c for c in mesh_report["downstream_affected_components"]}
+    assert by_name["Analytics Dashboard"]["dependency_depth"] == 1
+    assert by_name["Settlement Batch Processor"]["dependency_depth"] == 2
+    assert by_name["Executive Reporting Portal"]["dependency_depth"] == 3
+    assert by_name["Executive Reporting Portal"]["severity"] == "HIGH"
+    assert by_name["Executive Reporting Portal"]["direct_dependency_path"] == [
+        "Authentication Service",
+        "Analytics Dashboard",
+        "Settlement Batch Processor",
+        "Executive Reporting Portal",
+    ]
+

@@ -170,22 +170,44 @@ def _parse_uploaded_file_bytes(filename: str, raw_bytes: bytes) -> tuple[str, So
             if not extracted:
                 raise HTTPException(status_code=400, detail="PDF contained no extractable text.")
             return extracted, SourceType.PDF, None
+        except HTTPException:
+            raise
         except ImportError:
             raise HTTPException(
                 status_code=400,
-                detail="PDF parser ('pypdf') is not installed in this environment. Upload .txt, .md, .json, or .csv instead."
+                detail="PDF parser ('pypdf') is not installed in this environment."
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to parse PDF document (corrupted or unreadable binary): {exc}"
             )
 
     if ext == ".docx":
         try:
             import docx  # type: ignore
             doc = docx.Document(io.BytesIO(raw_bytes))
-            extracted = "\n".join(p.text for p in doc.paragraphs if p.text.strip()).strip()
+            parts = [p.text for p in doc.paragraphs if p.text.strip()]
+            for table in doc.tables:
+                for row in table.rows:
+                    row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                    if row_text:
+                        parts.append(row_text)
+            extracted = "\n".join(parts).strip()
+            if not extracted:
+                raise HTTPException(status_code=400, detail="DOCX document contained no extractable text.")
             return extracted, SourceType.DOC, None
+        except HTTPException:
+            raise
         except ImportError:
             raise HTTPException(
                 status_code=400,
-                detail="DOCX parser ('python-docx') is not installed in this environment. Upload .txt, .md, .json, or .csv instead."
+                detail="DOCX parser ('python-docx') is not installed in this environment."
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to parse DOCX document (corrupted or unreadable binary): {exc}"
             )
 
     raise HTTPException(

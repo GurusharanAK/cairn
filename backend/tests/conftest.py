@@ -1,6 +1,10 @@
 import os
 import tempfile
 
+# Allow legacy X-User-ID fixture compatibility during pytest suite execution;
+# dedicated security tests explicitly override this to "false" to assert production rejection.
+os.environ.setdefault("CAIRN_ALLOW_LEGACY_HEADER_AUTH", "true")
+
 _tmp = tempfile.mkdtemp()
 os.environ["CAIRN_DATABASE_URL"] = f"sqlite:///{_tmp}/test.db"
 os.environ["CAIRN_SECRET"] = "test-secret-test-secret-test-secret!!"

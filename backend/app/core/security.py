@@ -60,17 +60,25 @@ def verify_access_token(token: str) -> Dict[str, Any]:
         )
 
 
+def _allow_legacy_header_auth() -> bool:
+    """
+    Raw X-User-ID header fallback is disabled by default in production.
+    Set CAIRN_ALLOW_LEGACY_HEADER_AUTH=true only in isolated legacy test harnesses.
+    """
+    return os.getenv("CAIRN_ALLOW_LEGACY_HEADER_AUTH", "false").strip().lower() in {"1", "true", "yes"}
+
+
 def get_current_user(
     authorization: Optional[str] = Header(None, description="Bearer <signed-session-token>"),
-    x_user_id: Optional[str] = Header(None, description="Current authenticated User ID"),
+    x_user_id: Optional[str] = Header(None, description="Legacy test-only User ID header"),
     db: Session = Depends(get_db),
 ) -> User:
     """
     Resolve the authenticated Cairn user.
-    1. Prefers signed `Authorization: Bearer <token>` (rejects any invalid/tampered/expired token with 401).
-    2. Supports valid existing `X-User-ID` for backward-compatible test fixtures/demo tools; strictly rejects
-       forged or unknown user IDs with 401 Unauthorized.
-    3. Rejects unauthenticated requests lacking credentials with 401 Unauthorized unless empty fallback is omitted.
+    1. Validates signed `Authorization: Bearer <token>` via HMAC-SHA256 (rejects invalid/tampered/expired with 401).
+    2. Allows raw `X-User-ID` ONLY when `CAIRN_ALLOW_LEGACY_HEADER_AUTH=true`; strictly rejects all raw or
+       forged `X-User-ID` requests with 401 Unauthorized when disabled (default).
+    3. Rejects unauthenticated requests lacking valid credentials with 401 Unauthorized.
     """
     if authorization is not None:
         parts = authorization.strip().split(" ", 1)
@@ -89,6 +97,11 @@ def get_current_user(
         return user
 
     if x_user_id is not None:
+        if not _allow_legacy_header_auth():
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Legacy X-User-ID header authentication is disabled; provide Authorization: Bearer <token>.",
+            )
         cleaned_id = x_user_id.strip()
         if not cleaned_id:
             raise HTTPException(
@@ -97,7 +110,6 @@ def get_current_user(
             )
         user = db.query(User).filter(User.id == cleaned_id, User.is_active == True).first()
         if not user:
-            # Only auto-seed if database has literally no users yet AND ID is a canonical seeded actor
             if db.query(User).count() == 0 and cleaned_id in {"usr-mgr-01", "usr-dev-a", "usr-dev-b"}:
                 from app.seeds.seed_demo_data import seed_synthetic_project
                 seed_synthetic_project(db)
@@ -111,7 +123,7 @@ def get_current_user(
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Authentication credentials required (Bearer token or valid X-User-ID).",
+        detail="Authentication credentials required (Authorization: Bearer <token>).",
     )
 
 
