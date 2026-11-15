@@ -7,7 +7,11 @@ import { SuccessorReadinessView, ReadinessScenario, HandoverPacketData } from '.
 import { IngestionModal } from './components/IngestionModal';
 import { KnowledgeModelExplorer } from './components/KnowledgeModelExplorer';
 import { DepartingMemberWorkspace } from './components/DepartingMemberWorkspace';
+import { LoginScreen } from './components/LoginScreen';
 import {
+  AuthenticatedSession,
+  clearTokenCache,
+  seedTokenCache,
   fetchProjects,
   fetchProjectScore,
   fetchStressTest,
@@ -51,7 +55,8 @@ import {
   ShieldAlert,
   ChevronRight,
   TrendingUp,
-  Check
+  Check,
+  LogOut
 } from 'lucide-react';
 
 // ==========================================
@@ -197,9 +202,32 @@ const FALLBACK_KNOWLEDGE_MODEL = {
 
 type NavView = 'OVERVIEW' | 'STRESS_TEST' | 'REHEARSAL' | 'KNOWLEDGE' | 'DEPARTING_QUEUE' | 'READINESS';
 
+const AUTH_SESSION_STORAGE_KEY = 'cairn_auth_session_v1';
+
+function loadStoredSession(): AuthenticatedSession | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as AuthenticatedSession;
+    if (parsed?.user_id && parsed?.role && parsed?.access_token) {
+      if (parsed.access_token !== 'local-offline-session') {
+        seedTokenCache(parsed.user_id, parsed.access_token);
+      }
+      return parsed;
+    }
+  } catch {
+    // ignore corrupted session storage
+  }
+  return null;
+}
+
 export const CairnWorkspace: React.FC = () => {
-  const [currentRole, setCurrentRole] = useState<UserRole>('INCOMING_MEMBER');
-  const [activeView, setActiveView] = useState<NavView>('OVERVIEW');
+  const [authSession, setAuthSession] = useState<AuthenticatedSession | null>(() => loadStoredSession());
+  const [currentRole, setCurrentRole] = useState<UserRole>(() => loadStoredSession()?.role || 'INCOMING_MEMBER');
+  const [activeView, setActiveView] = useState<NavView>(() =>
+    loadStoredSession()?.role === 'DEPARTING_MEMBER' ? 'DEPARTING_QUEUE' : 'OVERVIEW'
+  );
   const [isIngestOpen, setIsIngestOpen] = useState(false);
   const [scoreData, setScoreData] = useState<ScoreBreakdown>(FALLBACK_SCORE);
   const [stressReport, setStressReport] = useState<StressTestReport>(FALLBACK_STRESS);
@@ -226,7 +254,36 @@ export const CairnWorkspace: React.FC = () => {
     INCOMING_MEMBER: "usr-dev-b"
   };
 
+  const handleLoginSuccess = (session: AuthenticatedSession, isOfflineFallback: boolean) => {
+    setAuthSession(session);
+    setCurrentRole(session.role);
+    setActiveView(session.role === 'DEPARTING_MEMBER' ? 'DEPARTING_QUEUE' : 'OVERVIEW');
+    setIsLiveConnected(!isOfflineFallback);
+    if (typeof window !== 'undefined') {
+      try {
+        window.sessionStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(session));
+      } catch {
+        // ignore storage quota errors
+      }
+    }
+  };
+
+  const handleLogout = () => {
+    clearTokenCache();
+    if (typeof window !== 'undefined') {
+      try {
+        window.sessionStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+      } catch {
+        // ignore
+      }
+    }
+    setAuthSession(null);
+    setIsLiveConnected(false);
+    setActiveView('OVERVIEW');
+  };
+
   const loadLiveData = async (withColdStartRetry: boolean = false, activeProjectId: string = PROJECT_ID) => {
+    if (!authSession) return;
     const retryOpts = withColdStartRetry
       ? {
           retries: 3,
@@ -236,8 +293,10 @@ export const CairnWorkspace: React.FC = () => {
       : undefined;
 
     try {
-      const uid = USER_IDS[currentRole];
-      await loginAsUser(uid, { retry: retryOpts });
+      const uid = authSession.user_id || USER_IDS[currentRole];
+      if (authSession.access_token === 'local-offline-session') {
+        await loginAsUser(uid, { retry: retryOpts });
+      }
       const [projRes, scoreRes, stressRes, questionsRes, scenRes, packetRes, kmRes, auditRes] = await Promise.allSettled([
         fetchProjects(uid, retryOpts),
         fetchProjectScore(activeProjectId, uid, retryOpts),
@@ -314,9 +373,10 @@ export const CairnWorkspace: React.FC = () => {
     await loadLiveData(false, PROJECT_ID);
   };
 
-  // Mount: support opt-in ?reset=1 / ?reset=true and clean URL, otherwise read-only GET sync with cold-start retry
+  // Sync when signed in or project switches: support opt-in ?reset=1 / ?reset=true and clean URL, otherwise read-only GET sync with cold-start retry
   const isFirstMount = React.useRef(true);
   useEffect(() => {
+    if (!authSession) return;
     const initial = isFirstMount.current;
     isFirstMount.current = false;
     if (initial && typeof window !== 'undefined') {
@@ -330,7 +390,7 @@ export const CairnWorkspace: React.FC = () => {
       }
     }
     loadLiveData(initial, PROJECT_ID);
-  }, [currentRole, projectId]);
+  }, [authSession, currentRole, projectId]);
 
   // Handle Asking Question
   const handleAskQuestion = async (questionText: string) => {
@@ -534,6 +594,15 @@ export const CairnWorkspace: React.FC = () => {
     { num: 8, name: "Handover" }
   ];
 
+  if (!authSession) {
+    return (
+      <LoginScreen
+        onLoginSuccess={handleLoginSuccess}
+        initialRole={currentRole}
+      />
+    );
+  }
+
   return (
     <div className="flex w-full h-screen bg-cream-200 text-ink-900 overflow-hidden font-sans">
       {/* ========================================================= */}
@@ -568,44 +637,44 @@ export const CairnWorkspace: React.FC = () => {
             <p className="text-[11px] text-cream-400 truncate">Leaving: Departing Member</p>
           </div>
 
-          {/* Role Switcher Pill Box */}
+          {/* Authenticated Role Card & Switch Account */}
           <div className="px-3.5 py-2">
             <label className="text-[10px] font-mono text-cream-400 uppercase tracking-wider block mb-1.5 font-semibold">
-              Simulate Persona:
+              Signed-In Role
             </label>
-            <div className="grid grid-cols-1 gap-1 bg-ink-950 p-1 rounded-xl border border-ink-800 text-xs shadow-inner">
+            <div className="bg-ink-950 p-3 rounded-xl border border-ink-800 space-y-2.5 shadow-inner">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-xs font-bold text-cream-50 truncate">
+                    {authSession.full_name}
+                  </div>
+                  <div className="text-[11px] font-mono text-cream-400 truncate">
+                    @{authSession.username}
+                  </div>
+                </div>
+                <span
+                  className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${
+                    currentRole === 'MANAGER'
+                      ? 'bg-purple-900/50 text-purple-200 border border-purple-500/40'
+                      : currentRole === 'DEPARTING_MEMBER'
+                      ? 'bg-amber-600/30 text-amber-300 border border-amber-500/40'
+                      : 'bg-orange-brand/25 text-orange-bright border border-orange-brand/40'
+                  }`}
+                >
+                  {currentRole === 'MANAGER'
+                    ? 'MANAGER'
+                    : currentRole === 'DEPARTING_MEMBER'
+                    ? 'DEPARTING'
+                    : 'SUCCESSOR'}
+                </span>
+              </div>
               <button
-                onClick={() => { setCurrentRole('INCOMING_MEMBER'); setActiveView('OVERVIEW'); }}
-                className={`text-left px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center justify-between transition-colors ${
-                  currentRole === 'INCOMING_MEMBER' 
-                    ? 'bg-orange-brand text-cream-50 font-bold shadow-sm' 
-                    : 'text-cream-300 hover:text-cream-50 hover:bg-ink-850'
-                }`}
+                type="button"
+                onClick={handleLogout}
+                className="w-full px-2.5 py-1.5 rounded-lg bg-ink-900 hover:bg-ink-850 border border-ink-700 text-[11px] font-semibold text-cream-200 hover:text-cream-50 flex items-center justify-center gap-1.5 transition-colors"
               >
-                <span>Successor Member</span>
-                {currentRole === 'INCOMING_MEMBER' && <CheckCircle2 className="w-3.5 h-3.5" />}
-              </button>
-              <button
-                onClick={() => { setCurrentRole('DEPARTING_MEMBER'); setActiveView('DEPARTING_QUEUE'); }}
-                className={`text-left px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center justify-between transition-colors ${
-                  currentRole === 'DEPARTING_MEMBER' 
-                    ? 'bg-amber-600/30 text-amber-300 border border-amber-500/40 font-bold' 
-                    : 'text-cream-300 hover:text-cream-50 hover:bg-ink-850'
-                }`}
-              >
-                <span>Departing Member</span>
-                {currentRole === 'DEPARTING_MEMBER' && <CheckCircle2 className="w-3.5 h-3.5 text-amber-300" />}
-              </button>
-              <button
-                onClick={() => { setCurrentRole('MANAGER'); setActiveView('OVERVIEW'); }}
-                className={`text-left px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center justify-between transition-colors ${
-                  currentRole === 'MANAGER' 
-                    ? 'bg-purple-900/40 text-purple-200 border border-purple-500/40 font-bold' 
-                    : 'text-cream-300 hover:text-cream-50 hover:bg-ink-850'
-                }`}
-              >
-                <span>Engineering Manager</span>
-                {currentRole === 'MANAGER' && <CheckCircle2 className="w-3.5 h-3.5" />}
+                <LogOut className="w-3.5 h-3.5 text-orange-bright" />
+                <span>Sign Out / Switch Role</span>
               </button>
             </div>
           </div>

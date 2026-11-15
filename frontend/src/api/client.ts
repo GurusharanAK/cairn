@@ -85,6 +85,55 @@ async function handleResponse(res: Response, defaultError: string) {
   return data;
 }
 
+export interface AuthenticatedSession {
+  access_token: string;
+  user_id: string;
+  role: 'MANAGER' | 'DEPARTING_MEMBER' | 'INCOMING_MEMBER';
+  full_name: string;
+  username: string;
+  email?: string;
+}
+
+export function seedTokenCache(userId: string, token: string) {
+  if (userId && token) {
+    tokenCache[userId] = token;
+  }
+}
+
+export async function loginWithCredentials(
+  username: string,
+  password: string,
+  opts?: { role?: 'MANAGER' | 'DEPARTING_MEMBER' | 'INCOMING_MEMBER'; retry?: RetryOptions }
+): Promise<AuthenticatedSession> {
+  const res = await fetchWithRetry(
+    `${API_BASE}/api/auth/login`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username,
+        password,
+        ...(opts?.role ? { role: opts.role } : {})
+      })
+    },
+    opts?.retry
+  );
+
+  const data = await handleResponse(res, 'Invalid username or password');
+  if (!data?.access_token || !data?.user_id) {
+    throw new Error('Authentication endpoint did not return a signed session token.');
+  }
+  tokenCache[data.user_id] = data.access_token;
+  return {
+    access_token: data.access_token,
+    user_id: data.user_id,
+    role: data.role,
+    full_name: data.full_name,
+    username: data.username || username,
+    email: data.email
+  };
+}
+
 export async function loginAsUser(
   userId: string,
   opts?: { forceRefresh?: boolean; retry?: RetryOptions }

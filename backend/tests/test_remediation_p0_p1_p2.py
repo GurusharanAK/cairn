@@ -676,3 +676,46 @@ def test_asking_same_approved_question_autofills_from_knowledge_model(isolated_d
     assert "authentication service" in jwt_ask.evidence_answer.lower()
 
 
+def test_role_username_password_authentication(client_and_db):
+    client, _db = client_and_db
+
+    valid_accounts = [
+        ("successor", "cairn-successor", "INCOMING_MEMBER", "usr-dev-b"),
+        ("departing", "cairn-departing", "DEPARTING_MEMBER", "usr-dev-a"),
+        ("manager", "cairn-manager", "MANAGER", "usr-mgr-01"),
+    ]
+    for username, password, expected_role, expected_uid in valid_accounts:
+        res = client.post(
+            "/api/auth/login",
+            json={"username": username, "password": password, "role": expected_role},
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["user_id"] == expected_uid
+        assert body["role"] == expected_role
+        assert body["username"]
+        assert body["access_token"]
+
+    # Wrong password rejected
+    bad_pw = client.post(
+        "/api/auth/login",
+        json={"username": "manager", "password": "wrong-password", "role": "MANAGER"},
+    )
+    assert bad_pw.status_code == 401
+
+    # Missing password when username is supplied rejected
+    missing_pw = client.post(
+        "/api/auth/login",
+        json={"username": "successor"},
+    )
+    assert missing_pw.status_code == 401
+
+    # Cross-role escalation rejected
+    escalation = client.post(
+        "/api/auth/login",
+        json={"username": "successor", "password": "cairn-successor", "role": "MANAGER"},
+    )
+    assert escalation.status_code == 403
+
+
+
