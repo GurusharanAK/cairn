@@ -169,8 +169,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               <h1 className="text-2xl font-serif font-bold text-cream-50 tracking-tight">
                 Sign in by Project Role
               </h1>
-              <p className="text-xs text-cream-400 mt-1.5 leading-relaxed">
-                Select a handover role below to fill its workspace credentials, or sign in manually using the username and password form.
+              <p className="text-xs text-cream-300 bg-ink-850/90 border border-ink-700 rounded-xl px-3 py-2 mt-2 leading-relaxed">
+                <strong className="text-orange-bright">Start here:</strong> Sign in as <strong>Successor</strong> to query evidence &amp; spot gaps, then switch to <strong>Departing</strong> to answer, and <strong>Manager</strong> to approve.
               </p>
             </div>
 
@@ -354,20 +354,35 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               </button>
             </form>
 
-            {/* Quick Credential Summary */}
-            <div className="rounded-2xl bg-cream-100 border border-cream-300 p-4 space-y-2">
-              <div className="text-[11px] font-mono font-bold text-ink-700 uppercase tracking-wider">
-                Active Role Credentials
+            {/* Quick Credential Summary — All 3 Demo Role Logins */}
+            <div className="rounded-2xl bg-cream-100 border border-cream-300 p-4 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-mono font-bold text-ink-800 uppercase tracking-wider">
+                  Quick Credential Summary (Demo Logins)
+                </span>
+                <span className="text-[10px] font-mono text-ink-500">Click row to fill</span>
               </div>
-              <div className="grid grid-cols-2 gap-3 text-xs font-mono">
-                <div>
-                  <span className="text-ink-500 block text-[10px]">USERNAME</span>
-                  <span className="font-bold text-ink-900">{activePreset.username}</span>
-                </div>
-                <div>
-                  <span className="text-ink-500 block text-[10px]">PASSWORD</span>
-                  <span className="font-bold text-ink-900">{activePreset.password}</span>
-                </div>
+              <div className="divide-y divide-cream-300 text-xs font-mono">
+                {ROLE_PRESETS.map((preset) => {
+                  const isActive = preset.role === activePreset.role;
+                  return (
+                    <button
+                      key={preset.role}
+                      type="button"
+                      onClick={() => handleSelectRole(preset)}
+                      className={`w-full py-2 px-2 rounded-lg flex items-center justify-between gap-2 text-left transition-colors ${
+                        isActive ? 'bg-orange-light/70 text-ink-950 font-bold' : 'hover:bg-cream-200/70 text-ink-800'
+                      }`}
+                    >
+                      <span className="truncate font-sans font-semibold text-xs">{preset.title}</span>
+                      <span className="flex-shrink-0 text-[11px]">
+                        <code className="text-orange-brand font-bold">{preset.username}</code>
+                        <span className="text-ink-400 mx-1">/</span>
+                        <code className="text-ink-900 font-bold">{preset.password}</code>
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>

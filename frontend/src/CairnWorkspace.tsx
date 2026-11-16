@@ -8,7 +8,9 @@ import { IngestionModal } from './components/IngestionModal';
 import { KnowledgeModelExplorer } from './components/KnowledgeModelExplorer';
 import { DepartingMemberWorkspace } from './components/DepartingMemberWorkspace';
 import { LoginScreen } from './components/LoginScreen';
+import { validateMeaningfulText } from './utils/validation';
 import {
+  API_BASE,
   AuthenticatedSession,
   clearTokenCache,
   seedTokenCache,
@@ -56,7 +58,10 @@ import {
   ChevronRight,
   TrendingUp,
   Check,
-  LogOut
+  LogOut,
+  Menu,
+  X,
+  AlertCircle
 } from 'lucide-react';
 
 // ==========================================
@@ -244,8 +249,14 @@ export const CairnWorkspace: React.FC = () => {
     { id: "proj-fintrack-mesh", name: "FinTrack Settlement Mesh — Multi-Hop Demo" }
   ]);
   const [isLiveConnected, setIsLiveConnected] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'live' | 'error'>('connecting');
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [allowSamplePreview, setAllowSamplePreview] = useState(false);
   const [isWakingBackend, setIsWakingBackend] = useState(false);
   const [quickQuestionInput, setQuickQuestionInput] = useState('');
+  const [quickQuestionError, setQuickQuestionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   const PROJECT_ID = projectId;
   const USER_IDS: Record<UserRole, string> = {
@@ -258,7 +269,17 @@ export const CairnWorkspace: React.FC = () => {
     setAuthSession(session);
     setCurrentRole(session.role);
     setActiveView(session.role === 'DEPARTING_MEMBER' ? 'DEPARTING_QUEUE' : 'OVERVIEW');
-    setIsLiveConnected(!isOfflineFallback);
+    setActionError(null);
+    if (isOfflineFallback) {
+      setIsLiveConnected(false);
+      setConnectionStatus('error');
+      setConnectionError('Backend server did not respond during login; showing explicit offline sample preview.');
+      setAllowSamplePreview(true);
+    } else {
+      setConnectionStatus('connecting');
+      setConnectionError(null);
+      setAllowSamplePreview(false);
+    }
     if (typeof window !== 'undefined') {
       try {
         window.sessionStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(session));
@@ -279,11 +300,17 @@ export const CairnWorkspace: React.FC = () => {
     }
     setAuthSession(null);
     setIsLiveConnected(false);
+    setConnectionStatus('connecting');
+    setConnectionError(null);
+    setAllowSamplePreview(false);
+    setIsMobileSidebarOpen(false);
     setActiveView('OVERVIEW');
   };
 
   const loadLiveData = async (withColdStartRetry: boolean = false, activeProjectId: string = PROJECT_ID) => {
     if (!authSession) return;
+    setConnectionStatus((prev) => (prev === 'live' ? 'live' : 'connecting'));
+    setConnectionError(null);
     const retryOpts = withColdStartRetry
       ? {
           retries: 3,
@@ -314,8 +341,14 @@ export const CairnWorkspace: React.FC = () => {
       if (scoreRes.status === 'fulfilled') {
         setScoreData(scoreRes.value);
         setIsLiveConnected(true);
+        setConnectionStatus('live');
+        setConnectionError(null);
+        setAllowSamplePreview(false);
       } else {
+        const reasonMsg = (scoreRes.reason as any)?.message || 'Unable to reach Cairn backend API.';
         setIsLiveConnected(false);
+        setConnectionStatus('error');
+        setConnectionError(reasonMsg);
       }
       if (stressRes.status === 'fulfilled') {
         setStressReport(stressRes.value);
@@ -348,20 +381,28 @@ export const CairnWorkspace: React.FC = () => {
       if (auditRes.status === 'fulfilled' && Array.isArray(auditRes.value)) {
         setAuditHistory(auditRes.value);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn("Backend sync", e);
       setIsLiveConnected(false);
+      setConnectionStatus('error');
+      setConnectionError(e?.message || 'Unable to connect to Cairn server.');
     } finally {
       setIsWakingBackend(false);
     }
   };
 
-  // Explicit user-triggered demo reset (or opt-in ?reset=1 / ?reset=true query param ONLY)
+  // Explicit user-triggered demo reset (Manager only, POST only)
   const resetAllToExampleData = async () => {
+    if (currentRole !== 'MANAGER') {
+      setActionError('Only an Engineering Manager can reset the shared demo.');
+      return;
+    }
+    setActionError(null);
     try {
       await resetDemoData(USER_IDS[currentRole]);
-    } catch (err) {
-      console.warn("Could not reset demo data:", err);
+    } catch (err: any) {
+      setActionError(err?.message || 'Could not reset demo data on backend server.');
+      return;
     }
     setScoreData(FALLBACK_SCORE);
     setStressReport(FALLBACK_STRESS);
@@ -419,8 +460,11 @@ export const CairnWorkspace: React.FC = () => {
         return [updated, ...prev.filter(item => item.id !== res.rehearsal_question_id)];
       });
       await loadLiveData(false, PROJECT_ID);
-    } catch (err) {
-      // Offline Local Fallback: search local Knowledge Model state deterministically
+    } catch (err: any) {
+      if (err?.status || !allowSamplePreview) {
+        throw err;
+      }
+      // Explicit Offline Sample Preview: search local Knowledge Model state deterministically
       const normQ = questionText.trim().toLowerCase();
       const stopwords = new Set(['why', 'what', 'when', 'where', 'how', 'does', 'did', 'the', 'and', 'for', 'with', 'from', 'set', 'use']);
       const terms = (normQ.match(/[a-z0-9_]+/g) || []).filter(t => !stopwords.has(t) && t.length >= 2);
@@ -476,8 +520,11 @@ export const CairnWorkspace: React.FC = () => {
     try {
       const uid = USER_IDS[currentRole];
       await replyRehearsalQuestion(questionId, replyText, uid);
-    } catch (e) {
-      console.warn("Live reply sync", e);
+    } catch (e: any) {
+      if (e?.status || !allowSamplePreview) {
+        throw e;
+      }
+      console.warn("Offline sample preview reply sync", e);
     }
     setExchanges(prev => prev.map(item => {
       if (item.id === questionId) {
@@ -496,8 +543,11 @@ export const CairnWorkspace: React.FC = () => {
     try {
       const uid = USER_IDS[currentRole];
       await reviewRehearsalQuestion(questionId, approved, comment, uid);
-    } catch (e) {
-      console.warn("Live review sync", e);
+    } catch (e: any) {
+      if (e?.status || !allowSamplePreview) {
+        throw e;
+      }
+      console.warn("Offline sample preview review sync", e);
     }
     setExchanges(prev => prev.map(item => {
       if (item.id === questionId) {
@@ -603,16 +653,42 @@ export const CairnWorkspace: React.FC = () => {
     );
   }
 
+  const selectNavView = (view: NavView) => {
+    setActiveView(view);
+    setIsMobileSidebarOpen(false);
+  };
+
   return (
-    <div className="flex w-full h-screen bg-cream-200 text-ink-900 overflow-hidden font-sans">
+    <div className="flex w-full h-screen bg-cream-200 text-ink-900 overflow-hidden font-sans relative">
+      {/* Mobile Sidebar Backdrop */}
+      {isMobileSidebarOpen && (
+        <div
+          className="fixed inset-0 bg-ink-950/60 backdrop-blur-xs z-30 md:hidden"
+          onClick={() => setIsMobileSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       {/* ========================================================= */}
-      {/* 1. LEFT SIDEBAR: Deep Obsidian Ink Rail (Grounds the Eye)  */}
+      {/* 1. LEFT SIDEBAR: Deep Obsidian Ink Rail (Collapsible on Phones) */}
       {/* ========================================================= */}
-      <aside className="w-64 flex-shrink-0 bg-ink-900 border-r border-ink-850 flex flex-col justify-between z-20 text-cream-100 shadow-warm-lg">
-        <div>
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 w-64 flex-shrink-0 bg-ink-900 border-r border-ink-850 flex flex-col justify-between text-cream-100 shadow-warm-lg transform transition-transform duration-200 ease-out md:static md:translate-x-0 ${
+          isMobileSidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        <div className="overflow-y-auto">
           {/* Brand Header */}
           <div className="p-5 border-b border-ink-850 flex items-center justify-between">
             <CairnLogo size="md" showText={true} inverted={true} />
+            <button
+              type="button"
+              onClick={() => setIsMobileSidebarOpen(false)}
+              aria-label="Close navigation menu"
+              className="md:hidden p-1.5 rounded-lg text-cream-300 hover:text-cream-50 hover:bg-ink-850 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
 
           {/* Project Boundary Card & Project Switcher */}
@@ -682,7 +758,7 @@ export const CairnWorkspace: React.FC = () => {
           {/* Navigation Links */}
           <nav className="p-3 space-y-1">
             <button
-              onClick={() => setActiveView('OVERVIEW')}
+              onClick={() => selectNavView('OVERVIEW')}
               className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-2.5 transition-colors ${
                 activeView === 'OVERVIEW' 
                   ? 'bg-ink-800 text-cream-50 font-bold border-l-4 border-l-orange-brand shadow-sm' 
@@ -694,7 +770,7 @@ export const CairnWorkspace: React.FC = () => {
             </button>
 
             <button
-              onClick={() => setActiveView('STRESS_TEST')}
+              onClick={() => selectNavView('STRESS_TEST')}
               className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-2.5 transition-colors ${
                 activeView === 'STRESS_TEST' 
                   ? 'bg-ink-800 text-cream-50 font-bold border-l-4 border-l-orange-brand shadow-sm' 
@@ -706,7 +782,7 @@ export const CairnWorkspace: React.FC = () => {
             </button>
 
             <button
-              onClick={() => setActiveView('REHEARSAL')}
+              onClick={() => selectNavView('REHEARSAL')}
               className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-between transition-colors ${
                 activeView === 'REHEARSAL' 
                   ? 'bg-ink-800 text-cream-50 font-bold border-l-4 border-l-orange-brand shadow-sm' 
@@ -725,7 +801,7 @@ export const CairnWorkspace: React.FC = () => {
             {/* Role Dedicated Workspace */}
             {currentRole === 'DEPARTING_MEMBER' ? (
               <button
-                onClick={() => setActiveView('DEPARTING_QUEUE')}
+                onClick={() => selectNavView('DEPARTING_QUEUE')}
                 className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between transition-colors ${
                   activeView === 'DEPARTING_QUEUE' 
                     ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 border-l-4 border-l-amber-500' 
@@ -742,7 +818,7 @@ export const CairnWorkspace: React.FC = () => {
               </button>
             ) : (
               <button
-                onClick={() => setActiveView('KNOWLEDGE')}
+                onClick={() => selectNavView('KNOWLEDGE')}
                 className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-2.5 transition-colors ${
                   activeView === 'KNOWLEDGE' 
                     ? 'bg-ink-800 text-cream-50 font-bold border-l-4 border-l-orange-brand shadow-sm' 
@@ -755,7 +831,7 @@ export const CairnWorkspace: React.FC = () => {
             )}
 
             <button
-              onClick={() => setActiveView('READINESS')}
+              onClick={() => selectNavView('READINESS')}
               className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-2.5 transition-colors ${
                 activeView === 'READINESS' 
                   ? 'bg-ink-800 text-cream-50 font-bold border-l-4 border-l-orange-brand shadow-sm' 
@@ -770,29 +846,35 @@ export const CairnWorkspace: React.FC = () => {
 
         {/* Ingest Action & Footer */}
         <div className="p-4 border-t border-ink-850 space-y-3 bg-ink-950/60">
-          <button
-            onClick={() => setIsIngestOpen(true)}
-            className="w-full bg-orange-brand hover:bg-orange-bright text-cream-50 font-bold text-xs py-2.5 px-3 rounded-xl flex items-center justify-center gap-2 shadow-md shadow-orange-brand/30 transition-all"
-          >
-            <FileUp className="w-4 h-4" /> Ingest Source / Commit
-          </button>
+          {currentRole !== 'INCOMING_MEMBER' && (
+            <button
+              onClick={() => { setIsIngestOpen(true); setIsMobileSidebarOpen(false); }}
+              className="w-full bg-orange-brand hover:bg-orange-bright text-cream-50 font-bold text-xs py-2.5 px-3 rounded-xl flex items-center justify-center gap-2 shadow-md shadow-orange-brand/30 transition-all"
+            >
+              <FileUp className="w-4 h-4" /> Ingest Source / Commit
+            </button>
+          )}
 
           <div className="flex items-center justify-between text-[11px] font-mono text-cream-400 pt-1">
             <span className="flex items-center gap-1.5">
               <span
                 className={`w-2 h-2 rounded-full ${
-                  isWakingBackend
+                  connectionStatus === 'connecting' || isWakingBackend
                     ? 'bg-orange-brand animate-pulse'
                     : isLiveConnected
                     ? 'bg-emerald-400'
-                    : 'bg-amber-400'
+                    : 'bg-rose-400'
                 }`}
               />
               {isWakingBackend
                 ? 'Waking Server...'
+                : connectionStatus === 'connecting'
+                ? 'Connecting...'
                 : isLiveConnected
                 ? 'API Live'
-                : 'Local Fallback'}
+                : allowSamplePreview
+                ? 'Sample Preview'
+                : 'Server Offline'}
             </span>
             <span>v1.0.0</span>
           </div>
@@ -803,14 +885,22 @@ export const CairnWorkspace: React.FC = () => {
       {/* 2. MAIN CENTERED CONTENT WORKSPACE (Warm Linen Backdrop)  */}
       {/* ========================================================= */}
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-y-auto bg-cream-200">
-        {/* Top Centered Header Bar with Cairn Logo & Breadcrumbs */}
-        <header className="border-b border-cream-300 bg-cream-100/95 sticky top-0 z-10 backdrop-blur-md px-8 py-3 flex items-center justify-between shadow-warm-sm">
-          <div className="flex items-center gap-3">
+        {/* Top Centered Header Bar with Mobile Menu Toggle, Cairn Logo & Breadcrumbs */}
+        <header className="border-b border-cream-300 bg-cream-100/95 sticky top-0 z-10 backdrop-blur-md px-4 sm:px-8 py-3 flex items-center justify-between gap-2 shadow-warm-sm">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+            <button
+              type="button"
+              onClick={() => setIsMobileSidebarOpen(true)}
+              aria-label="Open navigation menu"
+              className="md:hidden p-2 rounded-xl bg-ink-900 text-cream-50 hover:bg-ink-800 transition-colors flex-shrink-0"
+            >
+              <Menu className="w-4 h-4" />
+            </button>
             <CairnLogo size="sm" showText={false} />
-            <div className="flex items-center gap-2 text-xs">
+            <div className="flex items-center gap-2 text-xs min-w-0">
               <span className="font-serif font-bold text-ink-950">Cairn</span>
-              <span className="text-cream-400 font-mono">/</span>
-              <h2 className="text-xs font-semibold text-ink-800 capitalize">
+              <span className="text-cream-400 font-mono hidden sm:inline">/</span>
+              <h2 className="text-xs font-semibold text-ink-800 capitalize truncate hidden sm:block">
                 {activeView === 'OVERVIEW' && 'Continuity Overview & Diagnostic Breakdown'}
                 {activeView === 'STRESS_TEST' && 'Continuity Stress Test (Controlled Departure)'}
                 {activeView === 'REHEARSAL' && 'Handover Rehearsal Dialogue'}
@@ -822,10 +912,10 @@ export const CairnWorkspace: React.FC = () => {
           </div>
 
           {/* Quick Metrics Bar */}
-          <div className="flex items-center gap-4 text-xs font-mono">
+          <div className="flex items-center gap-2 sm:gap-4 text-xs font-mono flex-shrink-0">
             <span className="text-ink-600 hidden sm:inline">Score:</span>
-            <span className="bg-orange-light border border-orange-brand/30 text-orange-brand px-3 py-1 rounded-full font-bold shadow-warm-sm">
-              {scoreData.overall_score} / 100
+            <span className="bg-orange-light border border-orange-brand/30 text-orange-brand px-2.5 sm:px-3 py-1 rounded-full font-bold shadow-warm-sm">
+              {connectionStatus === 'live' || allowSamplePreview ? `${scoreData.overall_score} / 100` : '-- / 100'}
             </span>
 
             <button
@@ -833,23 +923,25 @@ export const CairnWorkspace: React.FC = () => {
               className="text-ink-600 hover:text-ink-950 p-1.5 rounded-lg hover:bg-cream-200 transition-colors border border-cream-300"
               title="Refresh live metrics from backend"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isWakingBackend ? 'animate-spin text-orange-brand' : ''}`} />
+              <RefreshCw className={`w-3.5 h-3.5 ${isWakingBackend || connectionStatus === 'connecting' ? 'animate-spin text-orange-brand' : ''}`} />
             </button>
 
-            <button 
-              onClick={resetAllToExampleData}
-              className="text-xs font-mono font-bold text-amber-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
-              title="Clear all entered data and restore example data"
-            >
-              <RotateCcw className="w-3.5 h-3.5 text-amber-700" />
-              <span className="hidden md:inline">Reset Demo</span>
-            </button>
+            {currentRole === 'MANAGER' && (
+              <button 
+                onClick={resetAllToExampleData}
+                className="text-xs font-mono font-bold text-amber-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
+                title="Manager-only: Clear all entered data and restore example benchmark data"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-amber-700" />
+                <span className="hidden md:inline">Reset Demo</span>
+              </button>
+            )}
           </div>
         </header>
 
         {/* 8-Stage Workflow Bar (Slide 3) */}
-        <div className="border-b border-cream-300 bg-cream-100 px-8 py-2">
-          <div className="max-w-6xl mx-auto flex items-center justify-between text-[11px] font-mono text-ink-700">
+        <div className="border-b border-cream-300 bg-cream-100 px-4 sm:px-8 py-2 overflow-x-auto">
+          <div className="max-w-6xl mx-auto flex items-center justify-between gap-2 min-w-max text-[11px] font-mono text-ink-700">
             {WORKFLOW_STAGES.map((s, idx) => (
               <React.Fragment key={s.num}>
                 <div className="flex items-center gap-1.5">
@@ -867,7 +959,100 @@ export const CairnWorkspace: React.FC = () => {
         </div>
 
         {/* Content Container (Dense, Informative, Grounded) */}
-        <div className="max-w-6xl w-full mx-auto p-8 space-y-7">
+        <div className="max-w-6xl w-full mx-auto p-4 sm:p-8 space-y-7">
+          {actionError && (
+            <div
+              role="alert"
+              className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs flex items-center justify-between gap-3 shadow-warm-sm"
+            >
+              <span className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+                <span>{actionError}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setActionError(null)}
+                className="text-rose-700 hover:text-rose-950 font-mono text-[11px] font-bold"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {connectionStatus === 'error' && allowSamplePreview && (
+            <div
+              role="status"
+              className="p-3.5 rounded-xl bg-amber-100 border border-amber-400 text-amber-950 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-warm-sm"
+            >
+              <span className="flex items-center gap-2 font-medium">
+                <AlertTriangle className="w-4 h-4 text-amber-700 flex-shrink-0" />
+                <span>
+                  <strong>OFFLINE SAMPLE DATA PREVIEW:</strong> Backend server unavailable ({connectionError}). Numbers shown below are static sample data, not live API state.
+                </span>
+              </span>
+              <button
+                type="button"
+                onClick={() => { setAllowSamplePreview(false); loadLiveData(true); }}
+                className="bg-amber-800 hover:bg-amber-900 text-cream-50 font-mono font-bold px-3 py-1.5 rounded-lg text-[11px] flex-shrink-0 self-start sm:self-auto"
+              >
+                Reconnect to Server
+              </button>
+            </div>
+          )}
+
+          {connectionStatus === 'connecting' && !allowSamplePreview ? (
+            <div
+              aria-live="polite"
+              className="bg-cream-50 border border-cream-300 rounded-2xl p-10 shadow-warm text-center max-w-xl mx-auto my-8 space-y-3"
+            >
+              <RefreshCw className="w-8 h-8 text-orange-brand animate-spin mx-auto" />
+              <h3 className="text-lg font-serif font-bold text-ink-950">
+                Connecting to server…
+              </h3>
+              <p className="text-xs text-ink-600 leading-relaxed">
+                Syncing verified Knowledge Model, continuity metrics, and RBAC boundary data from{' '}
+                <code className="font-mono text-orange-brand">{API_BASE}</code>.
+                {isWakingBackend ? ' Cold-starting backend instance, retrying with backoff…' : ''}
+              </p>
+            </div>
+          ) : connectionStatus === 'error' && !allowSamplePreview ? (
+            <div
+              role="alert"
+              className="bg-cream-50 border border-rose-300 rounded-2xl p-8 shadow-warm text-center max-w-xl mx-auto my-8 space-y-4"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-rose-100 border border-rose-200 flex items-center justify-center mx-auto">
+                <AlertCircle className="w-6 h-6 text-rose-600" />
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="text-lg font-serif font-bold text-ink-950">
+                  Unable to connect to Cairn server
+                </h3>
+                <p className="text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2 font-mono">
+                  {connectionError || 'Connection failed'} ({API_BASE})
+                </p>
+                <p className="text-xs text-ink-600 leading-relaxed">
+                  Live continuity data is unavailable, so Cairn is intentionally hiding unverified metrics instead of silently showing sample data.
+                </p>
+              </div>
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => loadLiveData(true)}
+                  className="bg-orange-brand hover:bg-orange-bright text-cream-50 font-bold text-xs px-5 py-2.5 rounded-xl shadow-warm-sm flex items-center gap-2 transition-colors"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> Retry Connection
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAllowSamplePreview(true)}
+                  className="bg-cream-100 hover:bg-cream-200 border border-cream-300 text-ink-800 font-mono font-bold text-xs px-4 py-2.5 rounded-xl transition-colors"
+                >
+                  Load Offline Sample Preview
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
           {activeView === 'OVERVIEW' && (
             <>
               {/* Executive Handover Status & Countdown Banner */}
@@ -1095,22 +1280,44 @@ export const CairnWorkspace: React.FC = () => {
                           type="text"
                           placeholder="Ask a question (e.g. Why PostgreSQL?)..."
                           value={quickQuestionInput}
-                          onChange={(e) => setQuickQuestionInput(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && quickQuestionInput.trim()) {
-                              handleAskQuestion(quickQuestionInput.trim());
-                              setQuickQuestionInput('');
-                              setActiveView('REHEARSAL');
+                          onChange={(e) => {
+                            setQuickQuestionInput(e.target.value);
+                            if (quickQuestionError) setQuickQuestionError(null);
+                          }}
+                          onKeyDown={async (e) => {
+                            if (e.key === 'Enter') {
+                              const err = validateMeaningfulText(quickQuestionInput, 'Question', 3);
+                              if (err) {
+                                setQuickQuestionError(err);
+                                return;
+                              }
+                              setQuickQuestionError(null);
+                              try {
+                                await handleAskQuestion(quickQuestionInput.trim());
+                                setQuickQuestionInput('');
+                                setActiveView('REHEARSAL');
+                              } catch (askErr: any) {
+                                setQuickQuestionError(askErr?.message || 'Unable to submit question.');
+                              }
                             }
                           }}
                           className="flex-1 bg-cream-100 border border-cream-300 rounded-xl px-3 py-2 text-xs text-ink-950 placeholder-ink-400 focus:outline-none focus:border-orange-brand shadow-inner"
                         />
                         <button
-                          onClick={() => {
-                            if (quickQuestionInput.trim()) {
-                              handleAskQuestion(quickQuestionInput.trim());
+                          type="button"
+                          onClick={async () => {
+                            const err = validateMeaningfulText(quickQuestionInput, 'Question', 3);
+                            if (err) {
+                              setQuickQuestionError(err);
+                              return;
+                            }
+                            setQuickQuestionError(null);
+                            try {
+                              await handleAskQuestion(quickQuestionInput.trim());
                               setQuickQuestionInput('');
                               setActiveView('REHEARSAL');
+                            } catch (askErr: any) {
+                              setQuickQuestionError(askErr?.message || 'Unable to submit question.');
                             }
                           }}
                           className="bg-orange-brand hover:bg-orange-bright text-cream-50 px-3.5 py-2 rounded-xl text-xs font-bold shadow-warm-sm"
@@ -1118,6 +1325,12 @@ export const CairnWorkspace: React.FC = () => {
                           Ask
                         </button>
                       </div>
+                      {quickQuestionError && (
+                        <div role="alert" className="text-[11px] text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
+                          <AlertCircle className="w-3.5 h-3.5 text-rose-600 flex-shrink-0" />
+                          <span>{quickQuestionError}</span>
+                        </div>
+                      )}
 
                       {/* Quick query chips */}
                       <div className="flex flex-wrap gap-1.5 pt-1">
@@ -1312,6 +1525,8 @@ export const CairnWorkspace: React.FC = () => {
                 ]
               }}
             />
+          )}
+            </>
           )}
         </div>
       </main>

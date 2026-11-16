@@ -3,8 +3,8 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.db.database import init_db
-from app.core.security import get_current_user
-from app.models.models import User
+from app.core.security import get_current_user, require_role
+from app.models.models import User, UserRole
 from app.api.auth import router as auth_router
 from app.api.ingest import router as ingest_router
 from app.api.stress_test import router as stress_test_router
@@ -57,8 +57,7 @@ def health_check():
     return {"status": "healthy", "platform": "Cairn", "gravity_lock": "ACTIVE"}
 
 @app.post("/api/demo/reset")
-@app.get("/api/demo/reset")
-def reset_demo(current_user: User = Depends(get_current_user)):
+def reset_demo(current_user: User = Depends(require_role([UserRole.MANAGER]))):
     from app.seeds.seed_demo_data import reset_database
     reset_database()
     return {

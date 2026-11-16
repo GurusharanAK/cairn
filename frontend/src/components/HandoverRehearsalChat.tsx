@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { validateMeaningfulText } from '../utils/validation';
 import { 
   Send, 
   CheckCircle2, 
@@ -74,6 +75,9 @@ export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
   const [newQuestion, setNewQuestion] = useState('');
   const [resettingDemo, setResettingDemo] = useState(false);
   const [submittingQuestion, setSubmittingQuestion] = useState(false);
+  const [submittingReplies, setSubmittingReplies] = useState<Record<string, boolean>>({});
+  const [submittingReviews, setSubmittingReviews] = useState<Record<string, boolean>>({});
+  const [formError, setFormError] = useState<string | null>(null);
   const [replyInputs, setReplyInputs] = useState<Record<string, string>>({});
   const [managerNotes, setManagerNotes] = useState<Record<string, string>>({});
 
@@ -85,36 +89,67 @@ export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
 
   const handleAskSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newQuestion.trim()) return;
+    const validationErr = validateMeaningfulText(newQuestion, 'Question', 3);
+    if (validationErr) {
+      setFormError(validationErr);
+      return;
+    }
+    setFormError(null);
     setSubmittingQuestion(true);
     try {
       await onAskQuestion(newQuestion.trim());
       setNewQuestion('');
+    } catch (err: any) {
+      setFormError(err?.message || 'Unable to submit question to server.');
     } finally {
       setSubmittingQuestion(false);
     }
   };
 
   const handleQuickQuestion = async (q: string) => {
+    setFormError(null);
     setSubmittingQuestion(true);
     try {
       await onAskQuestion(q);
+    } catch (err: any) {
+      setFormError(err?.message || 'Unable to submit question to server.');
     } finally {
       setSubmittingQuestion(false);
     }
   };
 
   const handleReplySubmit = async (questionId: string) => {
-    const text = replyInputs[questionId];
-    if (!text || !text.trim()) return;
-    await onReplyQuestion(questionId, text.trim());
-    setReplyInputs(prev => ({ ...prev, [questionId]: '' }));
+    const text = replyInputs[questionId] || '';
+    const validationErr = validateMeaningfulText(text, 'Reply', 3);
+    if (validationErr) {
+      setFormError(validationErr);
+      return;
+    }
+    setFormError(null);
+    setSubmittingReplies(prev => ({ ...prev, [questionId]: true }));
+    try {
+      await onReplyQuestion(questionId, text.trim());
+      setReplyInputs(prev => ({ ...prev, [questionId]: '' }));
+    } catch (err: any) {
+      setFormError(err?.message || 'Unable to submit reply.');
+    } finally {
+      setSubmittingReplies(prev => ({ ...prev, [questionId]: false }));
+    }
   };
 
   const handleReviewSubmit = async (questionId: string, approved: boolean) => {
-    const comment = managerNotes[questionId];
-    await onReviewQuestion(questionId, approved, comment);
-    setManagerNotes(prev => ({ ...prev, [questionId]: '' }));
+    if (submittingReviews[questionId]) return;
+    setFormError(null);
+    setSubmittingReviews(prev => ({ ...prev, [questionId]: true }));
+    try {
+      const comment = managerNotes[questionId];
+      await onReviewQuestion(questionId, approved, comment);
+      setManagerNotes(prev => ({ ...prev, [questionId]: '' }));
+    } catch (err: any) {
+      setFormError(err?.message || 'Unable to record manager review.');
+    } finally {
+      setSubmittingReviews(prev => ({ ...prev, [questionId]: false }));
+    }
   };
 
   return (
@@ -257,9 +292,10 @@ export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
                       />
                       <button
                         onClick={() => handleReplySubmit(ex.id)}
-                        className="bg-orange-brand hover:bg-orange-bright text-cream-50 font-bold text-xs px-3.5 py-2 rounded-lg flex items-center gap-1.5 transition-colors shadow-xs"
+                        disabled={!!submittingReplies[ex.id]}
+                        className="bg-orange-brand hover:bg-orange-bright disabled:opacity-50 text-cream-50 font-bold text-xs px-3.5 py-2 rounded-lg flex items-center gap-1.5 transition-colors shadow-xs"
                       >
-                        Submit Answer for Manager Review
+                        {submittingReplies[ex.id] ? 'Submitting...' : 'Submit Answer for Manager Review'}
                       </button>
                     </div>
                   ) : (
@@ -312,13 +348,15 @@ export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => handleReviewSubmit(ex.id, true)}
-                          className="bg-emerald-700 hover:bg-emerald-600 text-cream-50 font-bold text-xs px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors shadow-xs"
+                          disabled={!!submittingReviews[ex.id]}
+                          className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-cream-50 font-bold text-xs px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors shadow-xs"
                         >
-                          <CheckCircle2 className="w-3.5 h-3.5" /> Approve into Permanent Evidence
+                          <CheckCircle2 className="w-3.5 h-3.5" /> {submittingReviews[ex.id] ? 'Saving...' : 'Approve into Permanent Evidence'}
                         </button>
                         <button
                           onClick={() => handleReviewSubmit(ex.id, false)}
-                          className="bg-rose-700 hover:bg-rose-600 text-cream-50 font-bold text-xs px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors shadow-xs"
+                          disabled={!!submittingReviews[ex.id]}
+                          className="bg-rose-700 hover:bg-rose-600 disabled:opacity-50 text-cream-50 font-bold text-xs px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors shadow-xs"
                         >
                           <XCircle className="w-3.5 h-3.5" /> Reject
                         </button>
@@ -374,7 +412,25 @@ export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
       </div>
 
       {/* Input Bar */}
-      <div className="p-4 border-t border-cream-300 bg-cream-100">
+      <div className="p-4 border-t border-cream-300 bg-cream-100 space-y-2.5">
+        {formError && (
+          <div
+            role="alert"
+            className="px-3.5 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs flex items-center justify-between gap-2"
+          >
+            <span className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+              <span>{formError}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setFormError(null)}
+              className="text-rose-700 hover:text-rose-950 font-mono text-[11px] font-bold"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         {currentRole === 'DEPARTING_MEMBER' ? (
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-amber-100/80 border border-amber-300 rounded-xl">
             <div className="flex items-center gap-2 text-xs font-mono text-amber-950 font-medium">
@@ -410,17 +466,20 @@ export const HandoverRehearsalChat: React.FC<HandoverRehearsalChatProps> = ({
                   : "Ask question to Departing Member as Successor (e.g. Why is the payment retry limit set to 3?)..."
               }
               value={newQuestion}
-              onChange={(e) => setNewQuestion(e.target.value)}
+              onChange={(e) => {
+                setNewQuestion(e.target.value);
+                if (formError) setFormError(null);
+              }}
               disabled={submittingQuestion}
               className="flex-1 bg-cream-50 border border-cream-300 rounded-xl px-4 py-2.5 text-xs text-ink-950 placeholder-ink-400 focus:outline-none focus:border-orange-brand transition-colors shadow-xs"
             />
             <button
               type="submit"
-              disabled={submittingQuestion || !newQuestion.trim()}
+              disabled={submittingQuestion}
               className="bg-orange-brand hover:bg-orange-bright disabled:opacity-50 text-cream-50 font-bold text-xs px-5 py-2.5 rounded-xl flex items-center gap-2 shadow-sm shadow-orange-brand/30 transition-all whitespace-nowrap"
             >
               <Send className="w-3.5 h-3.5" />
-              <span>{currentRole === 'MANAGER' ? 'Ask as Manager' : 'Ask as Successor'}</span>
+              <span>{submittingQuestion ? 'Sending...' : currentRole === 'MANAGER' ? 'Ask as Manager' : 'Ask as Successor'}</span>
             </button>
           </form>
         )}

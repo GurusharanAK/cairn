@@ -1,77 +1,190 @@
-# Cairn - Project Continuity Intelligence Platform (MVP)
+# Cairn — Project Continuity Intelligence Platform
 
-> Don't just transfer the work. Transfer the understanding behind it.
+> **Don't just transfer the work. Transfer the understanding behind it.**
 
-Cairn rebuilds the reasoning behind a project from its approved sources, finds what nobody wrote down,
-asks the departing person only the questions that matter, and gives the successor an evidence-labelled handover.
-This MVP follows the Round 1 concept document: **Reconstruct -> Detect -> Rehearse -> Review -> Handover.**
+Cairn is a **deterministic, zero-hallucination** project continuity platform that reconstructs architectural decisions, dependencies, and failure playbooks from approved artifacts, surfaces knowledge gaps before key engineers leave, stress-tests departures with multi-hop BFS cascade analysis, and gates successor answers through Manager-approved evidence and an immutable audit trail.
 
-## Run it (2 minutes)
+---
 
-Requirements: Python 3.11+, Node 20+.
+## Core Guarantees & Zero-Hallucination Design
+
+- **100% Deterministic Engine (No LLM Calls):** Extraction ([`extractor.py`](backend/app/services/extractor.py)), BFS blast-radius analysis ([`stress_test.py`](backend/app/services/stress_test.py)), 4-factor continuity scoring (`40` Evidence Coverage + `20` Ownership Clarity + `20` Dependency Documentation + `20` Gap Resolution = `100`), and rehearsal Knowledge Model lookup are rule-based and reproducible.
+- **Strict Verbatim Quote Verification:** Every extracted decision quote must appear verbatim (after whitespace normalization) inside its `SourceDocument`; unverified claims are blocked from counting as `evidence_supported`.
+- **Clearance Filtering Before Retrieval:** Restricted documents (such as `RESTRICTED_MANAGER` HR/retention plans) and derived entities are filtered out at query time for `INCOMING_MEMBER` and `DEPARTING_MEMBER` across Knowledge Model, Readiness, Handover Packet, Rehearsal, and Audit endpoints ([`security.py`](backend/app/core/security.py)).
+- **Human Review Gate & Immutable Audit Log:** Departing member replies stay `pending_review` until an Engineering Manager signs off (`POST /api/rehearsal/review`), minting a permanent `REHEARSAL_VERIFIED_ANSWER` `SourceDocument` and writing an immutable [`ApprovalAuditLog`](backend/app/models/models.py) entry.
+- **Seeded FinTrack Benchmark:** Project 1 (**FinTrack Core Banking Ledger**, `proj-cairn-mvp`) starts at Continuity Score **`54.67`** and rises deterministically to **`72.67`** (`+18.0` points) after Manager approval of *"Why is the payment retry limit set to 3?"*. Project 2 (**FinTrack Settlement Mesh — Multi-Hop Demo**, `proj-fintrack-mesh`) ships with a pre-seeded 4-service, **3-hop** cascade graph.
+
+---
+
+## Quick Start (Local Setup)
+
+### Prerequisites
+- **Python 3.11+**
+- **Node.js 18+ / 20+** and `npm`
+
+### 1. Backend Setup & Run (Port `8000`)
+
+From the repository root (`cairn/`):
 
 ```bash
-# 1. backend
 cd backend
+python -m venv .venv
+# Windows PowerShell:
+.\.venv\Scripts\Activate.ps1
+# macOS / Linux:
+# source .venv/bin/activate
+
 pip install -r requirements.txt
-python seed.py --reset            # creates the synthetic "Orbit Pay" demo project + 4 demo users
-# 2. frontend (build once; the API serves it)
-cd ../frontend && npm install && npm run build && cd ../backend
-uvicorn app.main:app --port 8000  # open http://localhost:8000
 ```
 
-Dev mode with hot reload: run `uvicorn app.main:app --reload` and, in `frontend/`, `npm run dev` (http://localhost:5173, proxies `/api`).
+Run the API server (the database auto-creates tables and auto-seeds FinTrack demo projects on startup if empty; you can also explicitly reset seed data):
 
-Demo logins (password `cairn-demo`): `manager@`, `departing@`, `incoming@`, `admin@` + `cairn.demo`.
+```bash
+# macOS / Linux:
+PYTHONPATH=. python app/seeds/seed_demo_data.py
+PYTHONPATH=. uvicorn app.main:app --host 127.0.0.1 --port 8000
 
-Tests: `cd backend && python -m pytest` (33 tests).
+# Windows PowerShell (from backend/):
+$env:PYTHONPATH = (Get-Location).Path
+python app/seeds/seed_demo_data.py
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
 
-## Demo script (5 minutes)
+### 2. Frontend Setup & Run
 
-1. **Incoming** (Sana): Rehearsal tab -> ask *"Why did we choose PostgreSQL?"* -> answered with sources. Ask *"Why is the payment retry limit 3?"* -> Cairn refuses to guess and escalates (the real reason sits in a restricted HR file the successor cannot see).
-2. **Departing** (Arjun): sees the question with related context plus the gaps Cairn flagged. Replies; it is only *proposed*.
-3. **Manager** (Nikhil): Gaps and Stress Test tabs (if Arjun leaves: Authentication HIGH, Payment retry HIGH, Dashboard MEDIUM knock-on). Review tab -> approve the reply (it becomes evidence, the gap closes, scores rise) -> build and approve the handover.
-4. **Incoming**: My handover (every claim labelled and clickable back to its source), then the Readiness check.
-5. **Manager**: Validation tab shows Cairn's output against the answer key; Audit tab shows who did what.
+**Option A — Dev mode (recommended locally, Port `3000`):**
+```bash
+cd frontend
+npm install
+npm run dev -- --host 127.0.0.1 --port 3000
+```
+Open **`http://127.0.0.1:3000`** (it connects automatically to the FastAPI backend on `http://127.0.0.1:8000`).
 
-## What is built
+**Option B — Single-server production build (Port `8000`):**
+```bash
+cd frontend
+npm install
+npm run build
+cd ../backend
+PYTHONPATH=. uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+When `frontend/dist` exists, FastAPI serves the compiled SPA directly at `http://127.0.0.1:8000`.
 
-| Concept-doc module | Where |
-|---|---|
-| Knowledge Collector (docs, PDF, DOCX, task CSV/JSON, GitHub) | `app/ingest.py` |
-| Permission-aware access (admin / manager / departing / incoming) | `app/auth.py`, `service.successor_sources` |
-| Project Intelligence Engine (evidence-linked extraction) | `app/extract.py` (+ optional `app/llm.py`) |
-| Knowledge Gap Detector | `analysis.detect_gaps` |
-| Continuity Stress Test | `analysis.stress_test` |
-| Continuity Score (explainable, 40/20/20/20) | `analysis.compute_scores` |
-| Handover Rehearsal + escalation to the departing member | `app/rehearsal.py` |
-| Review and approval workflow, audit trail | `app/main.py` |
-| Successor workspace + readiness check | `frontend/src/pages/Successor.jsx` |
-| Synthetic project + answer key + validation | `backend/demo_data/`, `analysis.validate` |
+---
 
-## Rules the system enforces (all covered by tests)
+## Demo Logins (Role-Based Sign-In Screen)
 
-- **Permissions before retrieval.** Restricted sources never enter the successor's model, answers, handover or context. A hidden source returns 404, not 403.
-- **No guessing.** If evidence cannot answer, the question is logged as a gap and sent to the departing member with context.
-- **Humans approve.** A departing member's reply is only *proposed*; it becomes evidence after a manager/admin approves. Nothing reaches the successor until the handover is approved. A stale draft cannot be approved.
-- **Honest labels.** Every handover item is Evidence-supported, Missing evidence, Conflicting or Unverified, with clickable source and location.
-- **Score is a breakdown, not a prediction.** The Stress Test reports risk indicators and says so.
-- GitHub tokens are used for one request and never stored or logged. Uploads are capped at 5 MB.
+All three accounts and their credentials are also displayed directly on the Cairn Login Screen:
 
-## How extraction works (and its limits)
+| Role | Username | Email | Password | Clearance | Primary Actions |
+|---|---|---|---|---|---|
+| **Successor Member** (`INCOMING_MEMBER`) | `successor` | `successor.member@cairn.local` | `cairn-successor` | `RESTRICTED_TEAM` | Query Knowledge Model, rehearse handover Q&A, run readiness drills |
+| **Departing Member** (`DEPARTING_MEMBER`) | `departing` | `departing.member@cairn.local` | `cairn-departing` | `RESTRICTED_TEAM` | Answer queued handover questions, ingest source artifacts & commits |
+| **Engineering Manager** (`MANAGER`) | `manager` | `manager@cairn.local` | `cairn-manager` | `RESTRICTED_MANAGER` | View restricted docs, approve/reject replies into permanent evidence, reset demo (`POST /api/demo/reset`) |
 
-The default extractor is **deterministic and rule-based**, so results are reproducible and auditable. It reads lightly structured documents
-(`Component:`, `Decision: ... Reason: ... Decided by:`, `Task: ... - status:`, `Contact:`, `Issue:` / `Attempt n (failed|worked):`)
-plus a few natural-language patterns ("we decided to ... because ...", "only X knows ...", "A depends on B", "owned by X"), and commit/branch data.
-Free-form prose outside those patterns is **not** understood by default. Set `CAIRN_USE_LLM=1` and `ANTHROPIC_API_KEY` to add an LLM pass for decisions in free prose;
-every item it returns is rejected unless its quote appears verbatim in the source, and an unverifiable reason is dropped (never invented).
-Scanned PDFs need OCR first. Task statuses are matched across sources by title similarity.
+*(Suggested walkthrough: **Successor** asks `"Why is the payment retry limit set to 3?"` -> Cairn routes to Departing Member -> **Departing** answers -> **Manager** approves -> Continuity Score rises from `54.67` to `72.67` -> asking the same question again auto-fills immediately from the updated Knowledge Model.)*
 
-## Configuration
+---
 
-`CAIRN_SECRET` (JWT signing key - **set in production**), `CAIRN_DATABASE_URL` (default SQLite; PostgreSQL URL works with `psycopg`), `CAIRN_TOKEN_HOURS`, `CAIRN_USE_LLM`, `ANTHROPIC_API_KEY`, `CAIRN_LLM_MODEL`.
+## Key Capabilities
 
-## Known scope limits (MVP)
+1. **Multi-Channel Source Ingestion ([`ingest.py`](backend/app/api/ingest.py)):**
+   - **Text / ADR / Slack Exports (`POST /api/projects/{id}/ingest`):** Deterministic regex extraction for decisions, rationales, components, dependencies, code imports, and failure runbooks.
+   - **Binary & Structured File Upload (`POST /api/projects/{id}/ingest/file`):** Extracts clean text from **`.pdf`** (`pypdf`), **`.docx`** (`python-docx` paragraphs & tables), **`.txt`**, **`.md`**, **`.csv`**, **`.json`**, and source code files (`.py`, `.ts`, `.tsx`, `.js`, etc.); rejects empty or corrupted files with `400 Bad Request`.
+   - **GitHub Import (`POST /api/projects/{id}/ingest/github`):** Fetches commits & issues from a public `owner/repo` via GitHub REST API or ingests exported commits/issues JSON.
+2. **Input & Action Reliability:**
+   - Empty whitespace, symbol-only strings, digits-only noise, or repetitive junk inputs are rejected cleanly on both backend (`400 Bad Request` via [`validation.py`](backend/app/core/validation.py)) and frontend inline alerts.
+   - Re-asking identical questions and repeating approvals/rejections are handled idempotently without creating duplicate evidence documents, duplicate score inflation, or duplicate audit rows.
+   - `GET /api/demo/reset` is disabled (`405 Method Not Allowed`), and `POST /api/demo/reset` is strictly limited to `MANAGER` (`403 Forbidden` for other roles).
+   - While syncing or when the API is unreachable, the UI shows **"Connecting to server…"** or an explicit connection error panel with **Retry Connection** rather than silently masking failures as live data.
+3. **Immutable Approval Audit Trail:**
+   - `GET /api/rehearsal/{project_id}/audit-history` exposes timestamped manager approval/rejection decisions and minted source document IDs (filtered by caller clearance).
 
-Single organisation; no email/Slack/Jira connectors (upload exports instead); no password reset or user admin UI (users are seeded);
-no automated database migrations (`create_all`); SQLite by default; the GitHub fetch was tested against a mocked API, not a live repo.
+---
+
+## Environment Variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | `sqlite:///cairn_demo.db` | SQLAlchemy connection URI (`sqlite:///...` or PostgreSQL `postgresql+psycopg://...`) |
+| `CAIRN_SECRET_KEY` | `cairn-dev-hmac-secret-2026` | HMAC-SHA256 signing key for Bearer session tokens (**set a strong secret in production**; auto-generated in [`render.yaml`](render.yaml)) |
+| `CAIRN_TOKEN_TTL_SECONDS` | `86400` | Session Bearer token lifetime in seconds |
+| `CAIRN_ALLOW_LEGACY_HEADER_AUTH` | `false` | Enables raw `X-User-ID` header auth fallback ONLY when `"true"` (production & [`render.yaml`](render.yaml) set `"false"`; enabled automatically in [`backend/tests/conftest.py`](backend/tests/conftest.py)) |
+| `VITE_API_URL` / `VITE_BACKEND_URL` | Auto-detected | Optional frontend override for backend base URL |
+
+---
+
+## Running Tests & Type Checks
+
+Run the full automated pytest suite (invariants, bug-fix regressions, RBAC, token auth, binary PDF/DOCX parsing, multi-hop BFS, repeat idempotency, and junk-input guards):
+
+```bash
+# From backend/ with PYTHONPATH pointing to backend/:
+PYTHONPATH=. pytest -v
+```
+
+Build and type-check the pure TypeScript React frontend:
+
+```bash
+cd frontend
+npm run build   # runs `tsc && vite build`
+```
+
+---
+
+## Architecture Overview
+
+```text
+cairn/
+├── backend/
+│   ├── requirements.txt
+│   ├── app/
+│   │   ├── main.py                  # FastAPI app, startup seeding, /api/health, Manager-only POST /api/demo/reset
+│   │   ├── api/
+│   │   │   ├── auth.py              # Role login with PBKDF2 password verification & signed Bearer tokens
+│   │   │   ├── ingest.py            # /ingest, /ingest/file (PDF/DOCX/text/code), /ingest/github
+│   │   │   ├── rehearsal.py         # /ask, /reply, /review, /questions, /audit-history, idempotency guards
+│   │   │   ├── readiness.py         # /projects, /knowledge-model, /handover-packet, /readiness/scenarios
+│   │   │   └── stress_test.py       # /continuity-score, /stress-test, /stress-test/simulate-multihop
+│   │   ├── core/
+│   │   │   ├── security.py          # HMAC-SHA256 tokens, RBAC require_role, clearance filtering helpers
+│   │   │   └── validation.py        # Shared meaningful-text validator blocking empty/junk payloads
+│   │   ├── db/database.py           # SQLAlchemy engine & init_db
+│   │   ├── models/models.py         # Domain entities & ApprovalAuditLog
+│   │   ├── schemas/schemas.py       # Pydantic response schemas
+│   │   ├── seeds/seed_demo_data.py  # Seeded FinTrack Core Banking Ledger & 3-hop Settlement Mesh projects
+│   │   └── services/
+│   │       ├── extractor.py         # Deterministic rules extractor + verbatim quote enforcement
+│   │       └── stress_test.py       # Multi-hop BFS cascade traversal & 4-pillar continuity score
+│   └── tests/
+│       ├── conftest.py
+│       ├── test_cairn_invariants.py
+│       ├── test_bug_fixes.py
+│       └── test_remediation_p0_p1_p2.py
+├── frontend/
+│   └── src/
+│       ├── main.tsx                 # Strict TypeScript React 18 entrypoint
+│       ├── CairnWorkspace.tsx       # Workspace shell, collapsible mobile drawer, honest API status gating
+│       ├── api/client.ts            # Bearer authFetch client with cold-start retry backoff
+│       ├── utils/validation.ts      # Shared frontend empty/junk input validator
+│       └── components/
+│           ├── LoginScreen.tsx      # Role-based sign-in screen with visible demo usernames & passwords
+│           ├── HandoverRehearsalChat.tsx
+│           ├── DepartingMemberWorkspace.tsx
+│           ├── ContinuityStressTestView.tsx
+│           ├── ContinuityScoreWidget.tsx
+│           ├── IngestionModal.tsx
+│           ├── KnowledgeModelExplorer.tsx
+│           └── SuccessorReadinessView.tsx
+├── render.yaml                      # Render blueprint (free tier, healthCheckPath: /api/health, production env vars)
+└── .github/workflows/keep-alive.yml # Optional 10-minute cron pinger for /api/health during demo windows
+```
+
+---
+
+## Known Scope Limits & Production Notes
+
+- **Rule-Based Extraction Only:** Free-form prose that does not use recognized decision/component/dependency/failure markers or code import syntax is stored as searchable evidence text rather than parsed into structured decision nodes. Scanned image-only PDFs require OCR before upload.
+- **Seeded Authentication Directory:** Users and roles are seeded for the MVP demo workspace; there is no self-service user registration or password-reset email UI.
+- **Schema Management:** Tables are initialized via SQLAlchemy `Base.metadata.create_all` rather than Alembic migrations.
+- **Render Free-Tier Cold Starts:** Render free web services sleep after ~15 minutes of inactivity. Set the GitHub repository variable `CAIRN_HEALTHCHECK_URL` (e.g., `https://your-service.onrender.com`) to activate [`.github/workflows/keep-alive.yml`](.github/workflows/keep-alive.yml) every 10 minutes, use an external monitor (UptimeRobot / Better Stack) against `GET /api/health`, or upgrade to an always-on plan during judging windows.

@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from typing import Optional, Dict, Any, List
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.core.security import get_current_user, verify_project_access, require_role
+from app.core.validation import validate_meaningful_text
 from app.models.models import (
     User,
     UserRole,
@@ -75,12 +77,15 @@ def _execute_ingest(
     doc_metadata: Optional[Dict[str, Any]] = None,
     structured_payload: Optional[Dict[str, Any]] = None,
 ) -> IngestResponse:
-    """Persist SourceDocument, run deterministic extraction + verbatim verification, and commit."""
+    """Validate input, persist SourceDocument, run deterministic extraction + verbatim verification, and commit."""
+    clean_title = validate_meaningful_text(title, "Document title", min_alnum=3)
+    clean_content = validate_meaningful_text(content, "Document content", min_alnum=5)
+
     document = SourceDocument(
         project_id=project.id,
-        title=title,
+        title=clean_title,
         source_type=source_type,
-        content=content,
+        content=clean_content,
         doc_metadata=doc_metadata,
         access_level=access_level,
         created_by_id=current_user.id
@@ -299,8 +304,8 @@ def ingest_github_source(
 
     if payload.repo_slug and not commits and not issues:
         slug = payload.repo_slug.strip().strip("/")
-        if "/" not in slug or len(slug.split("/")) != 2:
-            raise HTTPException(status_code=400, detail="repo_slug must be in 'owner/repo' format.")
+        if not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", slug):
+            raise HTTPException(status_code=400, detail="repo_slug must be a valid 'owner/repo' identifier.")
         headers = {"Accept": "application/vnd.github+json", "User-Agent": "Cairn-Continuity-Platform"}
         try:
             req_c = urllib.request.Request(f"https://api.github.com/repos/{slug}/commits?per_page=10", headers=headers)

@@ -13,6 +13,7 @@ from app.core.security import (
     get_accessible_access_levels,
     get_allowed_source_ids,
 )
+from app.core.validation import validate_meaningful_text
 from app.models.models import (
     User,
     UserRole,
@@ -149,6 +150,7 @@ def ask_rehearsal_question(
       and deduplicates/routes the question to the departing member.
     """
     project = verify_project_access(project_id=payload.project_id, current_user=current_user, db=db)
+    cleaned_question = validate_meaningful_text(payload.question, "Question", min_alnum=3)
 
     # 1. Query-level permission boundary filter on SourceDocuments (via shared security helper)
     accessible_levels = get_accessible_access_levels(current_user)
@@ -158,8 +160,8 @@ def ask_rehearsal_question(
     ).all()
     allowed_source_ids = {s.id for s in allowed_sources}
 
-    normalized_input_q = _norm_question(payload.question)
-    query_terms = _extract_query_terms(payload.question)
+    normalized_input_q = _norm_question(cleaned_question)
+    query_terms = _extract_query_terms(cleaned_question)
     min_match_score = 2 if len(query_terms) >= 3 else 1
     fallback_min_score = 1 if len(query_terms) <= 2 else max(2, (len(query_terms) + 1) // 2)
 
@@ -323,18 +325,41 @@ def ask_rehearsal_question(
 
     # 4. If verified Knowledge Model evidence exists (and is not superseded by an unrecorded rationale match), auto-fill immediately!
     if verified_answer and (best_verified_score >= best_missing_score or best_verified_score >= 100):
-        question_rec = RehearsalQuestion(
-            project_id=project.id,
-            requester_id=current_user.id,
-            question=payload.question,
-            decision_id=verified_decision_id or payload.decision_id,
-            status=RehearsalStatus.ANSWERED_FROM_EVIDENCE,
-            evidence_answer=verified_answer,
-            cited_source_ids=list(dict.fromkeys(verified_cites))
+        deduped_cites = list(dict.fromkeys(verified_cites))
+        existing_answered = next(
+            (
+                pq
+                for pq in db.query(RehearsalQuestion)
+                .filter(
+                    RehearsalQuestion.project_id == project.id,
+                    RehearsalQuestion.status == RehearsalStatus.ANSWERED_FROM_EVIDENCE,
+                )
+                .order_by(RehearsalQuestion.created_at.desc())
+                .all()
+                if _norm_question(pq.question) == normalized_input_q
+            ),
+            None,
         )
-        db.add(question_rec)
-        db.commit()
-        db.refresh(question_rec)
+        if existing_answered:
+            existing_answered.evidence_answer = verified_answer
+            existing_answered.cited_source_ids = deduped_cites
+            existing_answered.decision_id = verified_decision_id or payload.decision_id or existing_answered.decision_id
+            db.commit()
+            db.refresh(existing_answered)
+            question_rec = existing_answered
+        else:
+            question_rec = RehearsalQuestion(
+                project_id=project.id,
+                requester_id=current_user.id,
+                question=cleaned_question,
+                decision_id=verified_decision_id or payload.decision_id,
+                status=RehearsalStatus.ANSWERED_FROM_EVIDENCE,
+                evidence_answer=verified_answer,
+                cited_source_ids=deduped_cites,
+            )
+            db.add(question_rec)
+            db.commit()
+            db.refresh(question_rec)
 
         return RehearsalAskResponse(
             rehearsal_question_id=question_rec.id,
@@ -396,7 +421,7 @@ def ask_rehearsal_question(
         question_rec = RehearsalQuestion(
             project_id=project.id,
             requester_id=current_user.id,
-            question=payload.question,
+            question=cleaned_question,
             knowledge_gap_id=existing_gap.id,
             decision_id=matched_missing_decision.id,
             status=RehearsalStatus.PENDING_DEPARTING_REPLY,
@@ -421,23 +446,23 @@ def ask_rehearsal_question(
         gap = KnowledgeGap(
             project_id=project.id,
             decision_id=payload.decision_id,
-            title=f"Rehearsal Question: {payload.question[:80]}",
-            description=f"Successor asked: '{payload.question}'. No approved evidence found.",
+            title=f"Rehearsal Question: {cleaned_question[:80]}",
+            description=f"Successor asked: '{cleaned_question}'. No approved evidence found.",
             gap_type=GapType.TACIT_KNOWLEDGE,
             status=GapStatus.QUESTION_QUEUED,
-            question_to_departing=payload.question
+            question_to_departing=cleaned_question
         )
         db.add(gap)
         db.flush()
     else:
-        gap.question_to_departing = payload.question
+        gap.question_to_departing = cleaned_question
         gap.status = GapStatus.QUESTION_QUEUED
         db.flush()
 
     question_rec = RehearsalQuestion(
         project_id=project.id,
         requester_id=current_user.id,
-        question=payload.question,
+        question=cleaned_question,
         knowledge_gap_id=gap.id,
         decision_id=payload.decision_id or gap.decision_id,
         status=RehearsalStatus.PENDING_DEPARTING_REPLY,
@@ -480,8 +505,16 @@ def reply_to_rehearsal_question(
 
     verify_project_access(project_id=question.project_id, current_user=current_user, db=db)
 
+    if question.status == RehearsalStatus.APPROVED_AS_EVIDENCE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Question has already been approved into the Knowledge Model."
+        )
+
+    cleaned_reply = validate_meaningful_text(payload.reply_text, "Reply", min_alnum=3)
+
     # Invariant: Status stays 'pending_review'
-    question.departing_reply = payload.reply_text
+    question.departing_reply = cleaned_reply
     question.status = RehearsalStatus.PENDING_REVIEW
 
     # Also update associated KnowledgeGap (direct FK link first, question text fallback)
@@ -494,7 +527,7 @@ def reply_to_rehearsal_question(
             KnowledgeGap.question_to_departing == question.question
         ).first()
     if gap:
-        gap.departing_member_reply = payload.reply_text
+        gap.departing_member_reply = cleaned_reply
         gap.status = GapStatus.PENDING_REVIEW
         if not question.knowledge_gap_id:
             question.knowledge_gap_id = gap.id
@@ -538,6 +571,32 @@ def review_rehearsal_reply(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot review question without a departing member reply."
+        )
+
+    if question.status == RehearsalStatus.APPROVED_AS_EVIDENCE:
+        if payload.approved:
+            return RehearsalReviewResponse(
+                question_id=question.id,
+                status=question.status,
+                new_verified_source_id=question.approved_source_document_id,
+                message="Already approved and recorded in Knowledge Model; no duplicate evidence or audit entry created."
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot reject a reply that has already been approved into the Knowledge Model."
+        )
+
+    if question.status == RehearsalStatus.REJECTED:
+        if not payload.approved:
+            return RehearsalReviewResponse(
+                question_id=question.id,
+                status=question.status,
+                new_verified_source_id=None,
+                message="Already rejected; no duplicate audit entry created."
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot approve a rejected reply directly; request an updated departing member reply first."
         )
 
     new_source_id = None
@@ -750,12 +809,12 @@ def get_rehearsal_audit_history(
 
 @router.post(
     "/{project_id}/reset-demo",
-    summary="Reset demo state back to pristine baseline with open gaps"
+    summary="Reset demo state back to pristine baseline with open gaps (Manager only)"
 )
 def reset_demo_state(
     project_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_role([UserRole.MANAGER]))
 ):
     """
     Resets the demo state back to pristine baseline benchmark state.

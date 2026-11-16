@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { validateMeaningfulText } from '../utils/validation';
 import { 
   UserMinus, 
   HelpCircle, 
@@ -34,16 +35,24 @@ export const DepartingMemberWorkspace: React.FC<DepartingMemberWorkspaceProps> =
   onSubmitReply
 }) => {
   const [replies, setReplies] = useState<Record<string, string>>({});
+  const [replyErrors, setReplyErrors] = useState<Record<string, string | null>>({});
   const [submitting, setSubmitting] = useState<Record<string, boolean>>({});
 
   const handleSendReply = async (id: string) => {
-    const text = replies[id];
-    if (!text || !text.trim()) return;
+    const text = replies[id] || '';
+    const validationErr = validateMeaningfulText(text, 'Reply', 3);
+    if (validationErr) {
+      setReplyErrors(prev => ({ ...prev, [id]: validationErr }));
+      return;
+    }
 
+    setReplyErrors(prev => ({ ...prev, [id]: null }));
     setSubmitting(prev => ({ ...prev, [id]: true }));
     try {
       await onSubmitReply(id, text.trim());
       setReplies(prev => ({ ...prev, [id]: '' }));
+    } catch (err: any) {
+      setReplyErrors(prev => ({ ...prev, [id]: err?.message || 'Failed to submit reply.' }));
     } finally {
       setSubmitting(prev => ({ ...prev, [id]: false }));
     }
@@ -121,16 +130,25 @@ export const DepartingMemberWorkspace: React.FC<DepartingMemberWorkspaceProps> =
                       rows={2}
                       placeholder="Type the authoritative reason/rationale for this choice..."
                       value={replies[q.id] || ''}
-                      onChange={(e) => setReplies(prev => ({ ...prev, [q.id]: e.target.value }))}
+                      onChange={(e) => {
+                        setReplies(prev => ({ ...prev, [q.id]: e.target.value }));
+                        if (replyErrors[q.id]) setReplyErrors(prev => ({ ...prev, [q.id]: null }));
+                      }}
                       className="w-full bg-cream-50 border border-cream-300 rounded-xl p-3 text-xs text-ink-950 placeholder-ink-400 focus:outline-none focus:border-orange-brand shadow-xs"
                     />
+                    {replyErrors[q.id] && (
+                      <div role="alert" className="text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-3 py-1.5 flex items-center gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 text-rose-600 flex-shrink-0" />
+                        <span>{replyErrors[q.id]}</span>
+                      </div>
+                    )}
                     <div className="flex justify-end">
                       <button
                         onClick={() => handleSendReply(q.id)}
-                        disabled={submitting[q.id] || !replies[q.id]?.trim()}
+                        disabled={submitting[q.id]}
                         className="bg-orange-brand hover:bg-orange-bright disabled:opacity-50 text-cream-50 font-bold text-xs px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-xs transition-colors"
                       >
-                        <Send className="w-3.5 h-3.5" /> Submit to Manager Review
+                        <Send className="w-3.5 h-3.5" /> {submitting[q.id] ? 'Submitting...' : 'Submit to Manager Review'}
                       </button>
                     </div>
                   </div>

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ingestDocument, ingestFileArtifact, ingestGitHubSource } from '../api/client';
+import { validateMeaningfulText } from '../utils/validation';
 import {
   FileUp,
   CheckCircle2,
@@ -70,9 +71,10 @@ export const IngestionModal: React.FC<IngestionModalProps> = ({
     try {
       let data: any;
       if (mode === 'TEXT') {
-        if (!title.trim() || !content.trim()) {
-          throw new Error('Title and document content are required.');
-        }
+        const titleErr = validateMeaningfulText(title, 'Document title', 3);
+        if (titleErr) throw new Error(titleErr);
+        const contentErr = validateMeaningfulText(content, 'Document content', 5);
+        if (contentErr) throw new Error(contentErr);
         data = await ingestDocument(
           projectId,
           {
@@ -85,7 +87,14 @@ export const IngestionModal: React.FC<IngestionModalProps> = ({
         );
       } else if (mode === 'FILE') {
         if (!selectedFile) {
-          throw new Error('Select a file (.txt, .md, .json, .csv, code) to upload.');
+          throw new Error('Select a file (.txt, .md, .pdf, .docx, .json, .csv, or code) to upload.');
+        }
+        if (selectedFile.size === 0) {
+          throw new Error('Selected file is empty (0 bytes). Please choose a non-empty artifact.');
+        }
+        if (title.trim()) {
+          const titleErr = validateMeaningfulText(title, 'Document title', 3);
+          if (titleErr) throw new Error(titleErr);
         }
         data = await ingestFileArtifact(
           projectId,
@@ -101,21 +110,32 @@ export const IngestionModal: React.FC<IngestionModalProps> = ({
         let commits: any[] | undefined;
         let issues: any[] | undefined;
         if (githubExportJson.trim()) {
-          const parsed = JSON.parse(githubExportJson.trim());
+          let parsed: any;
+          try {
+            parsed = JSON.parse(githubExportJson.trim());
+          } catch {
+            throw new Error('Exported GitHub JSON is malformed. Provide valid JSON with commits or issues.');
+          }
           if (Array.isArray(parsed)) {
             commits = parsed;
-          } else {
+          } else if (parsed && typeof parsed === 'object') {
             commits = parsed.commits;
             issues = parsed.issues;
+          } else {
+            throw new Error('Exported GitHub JSON must be an array of commits or an object containing commits/issues.');
           }
         }
-        if (!githubSlug.trim() && !commits && !issues) {
+        const trimmedSlug = githubSlug.trim().replace(/^\/+|\/+$/g, '');
+        if (trimmedSlug && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(trimmedSlug)) {
+          throw new Error("GitHub repository slug must match 'owner/repo' (e.g. pallets/flask).");
+        }
+        if (!trimmedSlug && (!commits || commits.length === 0) && (!issues || issues.length === 0)) {
           throw new Error('Provide either a public GitHub repo slug (owner/repo) or exported commits/issues JSON.');
         }
         data = await ingestGitHubSource(
           projectId,
           {
-            repo_slug: githubSlug.trim() || undefined,
+            repo_slug: trimmedSlug || undefined,
             title: title.trim() || undefined,
             access_level: accessLevel,
             commits,

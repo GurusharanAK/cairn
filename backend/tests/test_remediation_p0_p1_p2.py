@@ -718,4 +718,145 @@ def test_role_username_password_authentication(client_and_db):
     assert escalation.status_code == 403
 
 
+def test_junk_and_empty_inputs_rejected_with_clear_errors(client_and_db):
+    client, _db = client_and_db
+    mgr_token = client.post(
+        "/api/auth/login",
+        json={"username": "manager", "password": "cairn-manager", "role": "MANAGER"},
+    ).json()["access_token"]
+    mgr_headers = {"Authorization": f"Bearer {mgr_token}"}
+
+    junk_samples = ["   ", "???", "123456", "aaaaaaaa", "x"]
+    for sample in junk_samples:
+        ask_res = client.post(
+            "/api/rehearsal/ask",
+            json={"project_id": "proj-cairn-mvp", "question": sample},
+            headers=mgr_headers,
+        )
+        assert ask_res.status_code in (400, 422), f"Expected 400/422 for question {sample!r}, got {ask_res.status_code}"
+        assert "detail" in ask_res.json() and len(str(ask_res.json()["detail"])) > 5
+
+        ingest_res = client.post(
+            "/api/projects/proj-cairn-mvp/ingest",
+            json={
+                "title": "Valid Architecture Note",
+                "source_type": "DOC",
+                "content": sample,
+                "access_level": "RESTRICTED_TEAM",
+            },
+            headers=mgr_headers,
+        )
+        assert ingest_res.status_code in (400, 422), f"Expected 400/422 for content {sample!r}, got {ingest_res.status_code}"
+
+
+def test_reset_endpoint_manager_only_and_post_only(client_and_db, monkeypatch):
+    client, _db = client_and_db
+
+    called = {"count": 0}
+    import app.seeds.seed_demo_data as seed_mod
+    monkeypatch.setattr(seed_mod, "reset_database", lambda: called.__setitem__("count", called["count"] + 1))
+
+    succ_token = client.post(
+        "/api/auth/login",
+        json={"username": "successor", "password": "cairn-successor", "role": "INCOMING_MEMBER"},
+    ).json()["access_token"]
+    dep_token = client.post(
+        "/api/auth/login",
+        json={"username": "departing", "password": "cairn-departing", "role": "DEPARTING_MEMBER"},
+    ).json()["access_token"]
+    mgr_token = client.post(
+        "/api/auth/login",
+        json={"username": "manager", "password": "cairn-manager", "role": "MANAGER"},
+    ).json()["access_token"]
+
+    # GET /api/demo/reset must be blocked (POST only -> 405 without static mount or 404 with static mount; never resets)
+    get_reset = client.get("/api/demo/reset", headers={"Authorization": f"Bearer {mgr_token}"})
+    assert get_reset.status_code in (404, 405)
+    assert called["count"] == 0
+
+    # Non-manager POST must be blocked (403)
+    assert client.post("/api/demo/reset", headers={"Authorization": f"Bearer {succ_token}"}).status_code == 403
+    assert client.post("/api/demo/reset", headers={"Authorization": f"Bearer {dep_token}"}).status_code == 403
+    assert client.post(
+        "/api/rehearsal/proj-cairn-mvp/reset-demo",
+        headers={"Authorization": f"Bearer {succ_token}"},
+    ).status_code == 403
+    assert called["count"] == 0
+
+    # Manager POST succeeds
+    mgr_res = client.post("/api/demo/reset", headers={"Authorization": f"Bearer {mgr_token}"})
+    assert mgr_res.status_code == 200
+    assert called["count"] == 1
+
+
+def test_repeating_ask_and_approve_behaves_idempotently(client_and_db):
+    client, db = client_and_db
+    succ_token = client.post(
+        "/api/auth/login",
+        json={"username": "successor", "password": "cairn-successor", "role": "INCOMING_MEMBER"},
+    ).json()["access_token"]
+    dep_token = client.post(
+        "/api/auth/login",
+        json={"username": "departing", "password": "cairn-departing", "role": "DEPARTING_MEMBER"},
+    ).json()["access_token"]
+    mgr_token = client.post(
+        "/api/auth/login",
+        json={"username": "manager", "password": "cairn-manager", "role": "MANAGER"},
+    ).json()["access_token"]
+
+    succ_h = {"Authorization": f"Bearer {succ_token}"}
+    dep_h = {"Authorization": f"Bearer {dep_token}"}
+    mgr_h = {"Authorization": f"Bearer {mgr_token}"}
+
+    # 1. Ask an already-documented evidence question twice -> reuses same ANSWERED_FROM_EVIDENCE row
+    q_ev = "Why did we decide to use PostgreSQL instead of MongoDB?"
+    a1 = client.post("/api/rehearsal/ask", json={"project_id": "proj-cairn-mvp", "question": q_ev}, headers=succ_h)
+    a2 = client.post("/api/rehearsal/ask", json={"project_id": "proj-cairn-mvp", "question": q_ev}, headers=succ_h)
+    assert a1.status_code == 201 and a2.status_code == 201
+    assert a1.json()["rehearsal_question_id"] == a2.json()["rehearsal_question_id"]
+
+    # 2. Full ask -> reply -> double approve on payment retry question
+    gap_q = "Why is the payment retry limit set to 3?"
+    g_ask = client.post("/api/rehearsal/ask", json={"project_id": "proj-cairn-mvp", "question": gap_q}, headers=succ_h)
+    qid = g_ask.json()["rehearsal_question_id"]
+
+    rep = client.post(
+        "/api/rehearsal/reply",
+        json={"question_id": qid, "reply_text": "Capped at 3 to avoid downstream gateway rate limits."},
+        headers=dep_h,
+    )
+    assert rep.status_code == 200
+
+    initial_score = client.get("/api/projects/proj-cairn-mvp/continuity-score", headers=mgr_h).json()["overall_score"]
+    rev1 = client.post(
+        "/api/rehearsal/review",
+        json={"question_id": qid, "approved": True, "manager_comment": "Approved once"},
+        headers=mgr_h,
+    )
+    assert rev1.status_code == 200
+    score_after_1 = client.get("/api/projects/proj-cairn-mvp/continuity-score", headers=mgr_h).json()["overall_score"]
+    assert score_after_1 > initial_score
+
+    # Approve a second time -> idempotent, same source ID, same score, same audit count
+    rev2 = client.post(
+        "/api/rehearsal/review",
+        json={"question_id": qid, "approved": True, "manager_comment": "Accidental double click"},
+        headers=mgr_h,
+    )
+    assert rev2.status_code == 200
+    assert rev2.json()["new_verified_source_id"] == rev1.json()["new_verified_source_id"]
+    score_after_2 = client.get("/api/projects/proj-cairn-mvp/continuity-score", headers=mgr_h).json()["overall_score"]
+    assert score_after_2 == pytest.approx(score_after_1, abs=0.01)
+    assert db.query(ApprovalAuditLog).filter(ApprovalAuditLog.question_id == qid).count() == 1
+
+    # Conflicting rejection after approval is blocked with 409 Conflict
+    conflict = client.post(
+        "/api/rehearsal/review",
+        json={"question_id": qid, "approved": False, "manager_comment": "Too late"},
+        headers=mgr_h,
+    )
+    assert conflict.status_code == 409
+
+
+
 
